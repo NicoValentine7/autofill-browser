@@ -74,6 +74,21 @@ pnpm setup:extension-key
 
 `pnpm setup:extension-key` は、公開鍵が既に repo にある場合は固定IDを表示するだけです。CRX署名用の秘密鍵を作り直したい場合だけ `pnpm setup:extension-key -- --rotate` を使ってください。秘密鍵は `apps/chrome-extension/.extension-key/` に置かれ、git 管理しません。
 
+#### 別PCに入れる
+
+別PCでは秘密鍵や `.env.local` を同期しなくて大丈夫です。repo に固定ID用の公開 manifest key が入っているため、clone して build するだけで同じ拡張IDになります。
+
+```bash
+git clone https://github.com/NicoValentine7/autofill-browser.git
+cd autofill-browser
+pnpm install
+pnpm build:extension
+```
+
+Chrome の拡張機能管理画面で「デベロッパーモード」をONにし、「パッケージ化されていない拡張機能を読み込む」から `apps/chrome-extension/build/chrome-mv3-prod/` を選んでください。
+
+固定される拡張IDは `cjdfbkbfiengbkpejnjecgdgagipjkdk` です。プロフィール、Cloudflare Worker の Endpoint URL、Bearer token は Chrome のローカルストレージに保存されるため、別PCではpopupから再設定してください。
+
 ### CloudflareログAPI
 
 Cloudflare側は `apps/log-worker` にあります。D1 databaseを作り、`apps/log-worker/wrangler.jsonc` の `database_id` を差し替えてからmigrationとsecret設定を行ってください。
