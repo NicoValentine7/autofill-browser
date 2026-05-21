@@ -1,0 +1,13 @@
+{
+  "name": "log-worker",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "npx wrangler dev",
+    "deploy": "npx wrangler deploy",
+    "types": "npx wrangler types src/worker-configuration.d.ts",
+    "migrate:local": "npx wrangler d1 migrations apply autofill-browser-logs --local",
+    "migrate:remote": "npx wrangler d1 migrations apply autofill-browser-logs --remote"
+  }
+}

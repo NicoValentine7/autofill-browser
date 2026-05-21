@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Autofill Browser</string>
+    <string name="header_text">Autofill専用ブラウザの初期プロトタイプ</string>
+</resources>

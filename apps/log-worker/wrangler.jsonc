@@ -1,0 +1,18 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "autofill-browser-log-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-20",
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "autofill-browser-logs",
+      "database_id": "<replace-with-d1-database-id>",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "name": "autofill-browser",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.8.1",
+  "scripts": {
+    "dev:extension": "pnpm --filter chrome-extension dev",
+    "build:extension": "pnpm --filter chrome-extension build",
+    "typecheck:extension": "pnpm --filter chrome-extension typecheck",
+    "test:extension": "pnpm --filter chrome-extension test",
+    "dev:log-worker": "pnpm --dir apps/log-worker dev",
+    "deploy:log-worker": "pnpm --dir apps/log-worker deploy",
+    "typecheck:log-worker": "pnpm --filter chrome-extension exec tsc --noEmit -p ../log-worker/tsconfig.json",
+    "test:log-worker": "pnpm --filter chrome-extension exec vitest run --root ../log-worker tests/index.test.ts",
+    "setup:extension-key": "node scripts/setup-extension-key.mjs",
+    "sync:android-rules": "node scripts/sync-android-rules.mjs",
+    "serve:test-site": "python3 -m http.server 4173 --directory ./docs/test-site"
+  }
+}

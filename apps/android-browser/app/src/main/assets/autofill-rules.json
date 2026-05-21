@@ -1,0 +1,156 @@
+{
+  "schemaVersion": 1,
+  "profileKeys": [
+    "familyName",
+    "givenName",
+    "fullName",
+    "email",
+    "phone",
+    "organization",
+    "postalCode",
+    "prefecture",
+    "city",
+    "addressLine1",
+    "addressLine2"
+  ],
+  "rules": [
+    {
+      "key": "familyName",
+      "includes": ["family name", "last name", "surname", "last", "苗字", "名字", "sei", "family-name"],
+      "patterns": [{ "source": "(^| )姓($| )", "flags": "u" }],
+      "excludes": ["kana", "カナ", "かな", "ふりがな", "フリガナ", "full name", "氏名", "名前", "お名前"],
+      "excludePatterns": [
+        { "source": "(user|login|account|nick|screen|display|card).*(name|姓)", "flags": "u" }
+      ]
+    },
+    {
+      "key": "givenName",
+      "includes": ["first name", "given name", "first", "下の名前", "mei", "given-name"],
+      "patterns": [{ "source": "(^| )名($| )", "flags": "u" }],
+      "excludes": ["kana", "カナ", "かな", "ふりがな", "フリガナ", "full name", "氏名", "名前", "お名前"],
+      "excludePatterns": [
+        { "source": "(user|login|account|nick|screen|display|card).*(name|名)", "flags": "u" }
+      ]
+    },
+    {
+      "key": "postalCode",
+      "includes": ["postal code", "postcode", "post code", "zip", "zip code", "郵便番号", "〒"]
+    },
+    {
+      "key": "prefecture",
+      "includes": ["prefecture", "都道府県", "province", "state", "region", "address-level1"]
+    },
+    {
+      "key": "city",
+      "includes": [
+        "city",
+        "town",
+        "ward",
+        "locality",
+        "municipality",
+        "city/town",
+        "address-level2",
+        "市町村",
+        "市区町村",
+        "市区郡",
+        "区町村"
+      ],
+      "excludes": ["prefecture", "都道府県", "state", "province", "country", "国"]
+    },
+    {
+      "key": "addressLine2",
+      "includes": [
+        "address line2",
+        "address line 2",
+        "address2",
+        "addr2",
+        "住所2",
+        "住所欄2",
+        "building",
+        "apartment",
+        "apt",
+        "suite",
+        "unit",
+        "room",
+        "floor",
+        "bldg",
+        "建物",
+        "建物名",
+        "マンション",
+        "部屋",
+        "号室"
+      ]
+    },
+    {
+      "key": "addressLine1",
+      "includes": [
+        "address line1",
+        "address line 1",
+        "address1",
+        "addr1",
+        "street-address",
+        "住所1",
+        "住所欄1",
+        "street",
+        "street address",
+        "住所",
+        "番地",
+        "丁目",
+        "市区町村"
+      ],
+      "excludes": ["address2", "addr2", "address line2", "address line 2", "住所2", "住所欄2", "building", "建物"]
+    },
+    {
+      "key": "email",
+      "includes": ["email", "e mail", "mail", "メール"]
+    },
+    {
+      "key": "phone",
+      "includes": ["phone", "tel", "mobile", "telephone", "phone number", "tel-national", "電話", "携帯", "連絡先"]
+    },
+    {
+      "key": "organization",
+      "includes": ["company", "company name", "organization", "organisation", "org", "勤務先", "会社", "法人", "勤務先名"]
+    },
+    {
+      "key": "fullName",
+      "includes": ["full name", "fullname", "full-name", "name", "氏名", "名前", "お名前"],
+      "excludes": [
+        "kana",
+        "カナ",
+        "かな",
+        "mail",
+        "email",
+        "phone",
+        "tel",
+        "company",
+        "organization",
+        "org",
+        "user",
+        "username",
+        "login",
+        "account",
+        "nickname",
+        "screen name",
+        "display name",
+        "card",
+        "cardholder",
+        "coupon",
+        "promo",
+        "voucher",
+        "surname",
+        "last name",
+        "family name",
+        "first name",
+        "given name",
+        "姓",
+        "名"
+      ],
+      "excludePatterns": [
+        { "source": "(user|login|account|nick|screen|display).*(name)", "flags": "u" },
+        { "source": "(card|credit|debit).*(name)", "flags": "u" },
+        { "source": "(name).*(card|credit|debit)", "flags": "u" }
+      ]
+    }
+  ]
+}
