@@ -60,14 +60,19 @@ popup の「クラウドログ」から Cloudflare Worker の `https://.../logs`
 
 #### 拡張IDを固定する
 
-別PCでも同じ拡張IDで読み込みたい場合は、manifest `key` 用のローカル鍵を作ります。秘密鍵と `.env.local` は git 管理しません。
+manifest `key` の公開鍵は `apps/chrome-extension/package.json` に入れてあるため、別PCでも clone して build するだけで同じ拡張IDになります。秘密鍵のコピーは不要です。
 
 ```bash
-pnpm setup:extension-key
 pnpm build:extension
 ```
 
-このコマンドは `apps/chrome-extension/.extension-key/` に秘密鍵を作り、`apps/chrome-extension/.env.local` に公開鍵だけを書きます。別PCで同じ拡張IDにする場合は、秘密鍵ファイルを安全な方法でコピーしてから `pnpm setup:extension-key` を実行してください。
+固定IDを確認したい場合は以下を実行してください。
+
+```bash
+pnpm setup:extension-key
+```
+
+`pnpm setup:extension-key` は、公開鍵が既に repo にある場合は固定IDを表示するだけです。CRX署名用の秘密鍵を作り直したい場合だけ `pnpm setup:extension-key -- --rotate` を使ってください。秘密鍵は `apps/chrome-extension/.extension-key/` に置かれ、git 管理しません。
 
 ### CloudflareログAPI
 

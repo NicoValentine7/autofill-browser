@@ -5,10 +5,32 @@ import { fileURLToPath } from "node:url"
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const extensionDir = resolve(repoRoot, "apps/chrome-extension")
+const packageJsonPath = resolve(extensionDir, "package.json")
 const keyDir = resolve(extensionDir, ".extension-key")
 const privateKeyPath = resolve(keyDir, "autofill-browser-extension-key.pem")
-const envPath = resolve(extensionDir, ".env.local")
-const envName = "AUTOFILL_EXTENSION_MANIFEST_KEY"
+const rotateRequested = process.argv.includes("--rotate")
+
+const readPackageJson = () => JSON.parse(readFileSync(packageJsonPath, "utf8"))
+
+const writePackageJson = (packageJson) => {
+  writeFileSync(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`)
+}
+
+const isPlaceholderKey = (key) => typeof key === "string" && key.startsWith("$")
+
+const readTrackedManifestKey = () => {
+  const manifestKey = readPackageJson().manifest?.key
+  return typeof manifestKey === "string" && manifestKey.length > 0 && !isPlaceholderKey(manifestKey) ? manifestKey : ""
+}
+
+const writeTrackedManifestKey = (manifestKey) => {
+  const packageJson = readPackageJson()
+  packageJson.manifest = {
+    ...packageJson.manifest,
+    key: manifestKey
+  }
+  writePackageJson(packageJson)
+}
 
 const ensurePrivateKey = () => {
   if (existsSync(privateKeyPath)) {
@@ -54,29 +76,24 @@ const deriveExtensionId = (manifestKey) => {
     .join("")
 }
 
-const updateEnvFile = (manifestKey) => {
-  const lines = existsSync(envPath) ? readFileSync(envPath, "utf8").split(/\r?\n/) : []
-  const nextLine = `${envName}=${manifestKey}`
-  const keyPattern = new RegExp(`^${envName}=`)
-  const existingIndex = lines.findIndex((line) => keyPattern.test(line))
+const trackedManifestKey = readTrackedManifestKey()
 
-  if (existingIndex >= 0) {
-    lines[existingIndex] = nextLine
+if (trackedManifestKey && !rotateRequested) {
+  console.log(`Manifest key is already tracked in ${packageJsonPath}`)
+  console.log(`Stable extension ID: ${deriveExtensionId(trackedManifestKey)}`)
+  if (existsSync(privateKeyPath)) {
+    console.log(`Private key is available at ${privateKeyPath}`)
   } else {
-    if (lines.length > 0 && lines.at(-1) !== "") {
-      lines.push("")
-    }
-    lines.push(nextLine)
+    console.log("Private key is not needed for unpacked Chrome builds.")
   }
-
-  writeFileSync(envPath, `${lines.filter((line, index) => index < lines.length - 1 || line !== "").join("\n")}\n`)
+  process.exit(0)
 }
 
 const privateKey = ensurePrivateKey()
 const manifestKey = deriveManifestKey(privateKey)
 const extensionId = deriveExtensionId(manifestKey)
-updateEnvFile(manifestKey)
+writeTrackedManifestKey(manifestKey)
 
-console.log(`Manifest key written to ${envPath}`)
+console.log(`Manifest key written to ${packageJsonPath}`)
 console.log(`Private key kept at ${privateKeyPath}`)
 console.log(`Stable extension ID: ${extensionId}`)
