@@ -14,7 +14,7 @@
     {
       "binding": "DB",
       "database_name": "autofill-browser-logs",
-      "database_id": "<replace-with-d1-database-id>",
+      "database_id": "f4fd8864-1d23-4a84-bbe5-6776fc03e45a",
       "migrations_dir": "migrations"
     }
   ]
