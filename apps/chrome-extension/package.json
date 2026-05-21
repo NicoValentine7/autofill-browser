@@ -43,7 +43,7 @@
       "default_popup": "popup.html"
     },
     "oauth2": {
-      "client_id": "replace-with-google-oauth-client-id.apps.googleusercontent.com",
+      "client_id": "456050823963-n1hkblddhgbkfa4ihb1u6cgicmfvpbp5.apps.googleusercontent.com",
       "scopes": [
         "openid",
         "email",
