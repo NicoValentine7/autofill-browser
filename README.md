@@ -58,6 +58,16 @@ Plasmo のビルド出力は `build/chrome-mv3-dev/` または `build/chrome-mv3
 
 Chrome拡張は標準でこのリポジトリの Cloudflare Worker に接続するため、保存先URLの入力は不要です。Googleログインすると、Cloudflare D1を正本としてプロフィール、自動入力設定、ドメイン制御、イベントログ、Remote rulesを自動同期します。Chromeのローカルstorageはオフライン用キャッシュです。
 
+#### 開発中の読み込み運用
+
+普段の開発中は `pnpm dev:extension` を常駐させ、Chrome では一度だけ `apps/chrome-extension/build/chrome-mv3-dev/` を読み込んでください。Plasmo dev が変更を監視して dev build を再生成するため、毎回 `chrome://extensions` を開いてリロード操作する必要は基本ありません。
+
+```bash
+pnpm dev:extension
+```
+
+本番相当の最終確認や別PC配布前だけ、`pnpm build:extension` を実行して `apps/chrome-extension/build/chrome-mv3-prod/` を使います。開発中の操作奪われ対策としては、dev版を読みっぱなしにするのが標準運用です。
+
 #### 拡張IDを固定する
 
 manifest `key` の公開鍵は `apps/chrome-extension/package.json` に入れてあるため、別PCでも clone して build するだけで同じ拡張IDになります。秘密鍵のコピーは不要です。
