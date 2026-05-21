@@ -22,6 +22,32 @@ type StoredSyncSnapshotRow = {
   domain_policies_json: string
   updated_at: string
   raw_json: string
+  revision: number
+  device_id: string | null
+  changed_fields_json: string
+  encryption_version: number
+}
+
+type StoredRemoteRulesRow = {
+  key: string
+  schema_version: number
+  blocked_identity_tokens_json: string
+  updated_at: string
+}
+
+type StoredAnalysisReportRow = {
+  id: string
+  scope_user_id: string | null
+  window_started_at: string
+  window_ended_at: string
+  total_events: number
+  field_filled_count: number
+  correction_count: number
+  risky_event_count: number
+  top_hostnames_json: string
+  top_profile_keys_json: string
+  notes_json: string
+  created_at: string
 }
 
 const event = {
@@ -109,13 +135,55 @@ class FakeStatement implements D1PreparedStatement {
         settings_json: String(this.values[3]),
         domain_policies_json: String(this.values[4]),
         updated_at: String(this.values[5]),
-        raw_json: String(this.values[6])
+        raw_json: String(this.values[6]),
+        revision: Number(this.values[7] ?? 0),
+        device_id: this.values[8] === null ? null : String(this.values[8]),
+        changed_fields_json: String(this.values[9] ?? "[]"),
+        encryption_version: Number(this.values[10] ?? 0)
       }
       const existingIndex = this.db.snapshots.findIndex((existingRow) => existingRow.user_id === row.user_id)
       if (existingIndex >= 0) {
         this.db.snapshots[existingIndex] = row
       } else {
         this.db.snapshots.push(row)
+      }
+    }
+
+    if (this.query.includes("INSERT OR REPLACE INTO remote_rules")) {
+      const row: StoredRemoteRulesRow = {
+        key: String(this.values[0]),
+        schema_version: Number(this.values[1]),
+        blocked_identity_tokens_json: String(this.values[2]),
+        updated_at: String(this.values[3])
+      }
+      const existingIndex = this.db.remoteRules.findIndex((existingRow) => existingRow.key === row.key)
+      if (existingIndex >= 0) {
+        this.db.remoteRules[existingIndex] = row
+      } else {
+        this.db.remoteRules.push(row)
+      }
+    }
+
+    if (this.query.includes("INSERT OR REPLACE INTO log_analysis_reports")) {
+      const row: StoredAnalysisReportRow = {
+        id: String(this.values[0]),
+        scope_user_id: this.values[1] === null ? null : String(this.values[1]),
+        window_started_at: String(this.values[2]),
+        window_ended_at: String(this.values[3]),
+        total_events: Number(this.values[4]),
+        field_filled_count: Number(this.values[5]),
+        correction_count: Number(this.values[6]),
+        risky_event_count: Number(this.values[7]),
+        top_hostnames_json: String(this.values[8]),
+        top_profile_keys_json: String(this.values[9]),
+        notes_json: String(this.values[10]),
+        created_at: String(this.values[11])
+      }
+      const existingIndex = this.db.analysisReports.findIndex((existingRow) => existingRow.id === row.id)
+      if (existingIndex >= 0) {
+        this.db.analysisReports[existingIndex] = row
+      } else {
+        this.db.analysisReports.push(row)
       }
     }
 
@@ -139,11 +207,37 @@ class FakeStatement implements D1PreparedStatement {
       }
     }
 
+    if (this.query.includes("FROM remote_rules")) {
+      return {
+        success: true,
+        results: this.db.remoteRules.filter((row) => row.key === this.values[0]) as T[]
+      }
+    }
+
+    if (this.query.includes("FROM log_analysis_reports")) {
+      const hasUserFilter = this.query.includes("WHERE scope_user_id = ?")
+      const limit = Number(this.values[hasUserFilter ? 1 : 0] ?? 50)
+      const userId = hasUserFilter ? String(this.values[0]) : null
+      const results = [...this.db.analysisReports]
+        .filter((row) => (userId ? row.scope_user_id === userId : row.scope_user_id === null))
+        .sort((left, right) => right.created_at.localeCompare(left.created_at))
+        .slice(0, limit) as T[]
+
+      return {
+        success: true,
+        results
+      }
+    }
+
     const hasUserFilter = this.query.includes("WHERE user_id = ?")
-    const limit = Number(this.values[hasUserFilter ? 1 : 0] ?? 50)
+    const hasReceivedAtFilter = this.query.includes("received_at >= ?")
+    const limitIndex = hasUserFilter && hasReceivedAtFilter ? 2 : hasUserFilter || hasReceivedAtFilter ? 1 : 0
+    const limit = Number(this.values[limitIndex] ?? 50)
     const userId = hasUserFilter ? String(this.values[0]) : null
+    const receivedAtMin = hasReceivedAtFilter ? String(this.values[hasUserFilter ? 1 : 0]) : null
     const results = [...this.db.rows]
       .filter((row) => (userId ? row.user_id === userId : true))
+      .filter((row) => (receivedAtMin ? row.received_at >= receivedAtMin : true))
       .sort((left, right) => right.received_at.localeCompare(left.received_at) || right.timestamp.localeCompare(left.timestamp))
       .slice(0, limit) as T[]
 
@@ -158,6 +252,8 @@ class FakeD1Database implements D1Database {
   readonly rows: StoredLogRow[] = []
   readonly users: StoredUserRow[] = []
   readonly snapshots: StoredSyncSnapshotRow[] = []
+  readonly remoteRules: StoredRemoteRulesRow[] = []
+  readonly analysisReports: StoredAnalysisReportRow[] = []
 
   prepare(query: string) {
     return new FakeStatement(query, this)
@@ -167,7 +263,8 @@ class FakeD1Database implements D1Database {
 const createEnv = () => ({
   DB: new FakeD1Database(),
   CLOUD_LOG_INGEST_TOKEN: "secret-token",
-  GOOGLE_OAUTH_CLIENT_ID: "google-client-id.apps.googleusercontent.com"
+  GOOGLE_OAUTH_CLIENT_ID: "google-client-id.apps.googleusercontent.com",
+  CLOUD_DATA_ENCRYPTION_KEY: "unit-test-encryption-key"
 })
 
 const authHeaders = {
@@ -258,9 +355,10 @@ describe("log-worker", () => {
     expect(env.DB.rows[0]).toMatchObject({
       id: "event-1",
       user_id: null,
-      next_value: "taro@example.com",
-      previous_value: ""
+      previous_value: expect.stringContaining('"encrypted":true'),
+      next_value: expect.stringContaining('"encrypted":true')
     })
+    expect(env.DB.rows[0]?.next_value).not.toContain("taro@example.com")
   })
 
   it("returns recent logs newest first", async () => {
@@ -423,7 +521,10 @@ describe("log-worker", () => {
       domainPolicies: {
         "example.com": "whitelist"
       },
-      updatedAt: "2026-05-21T00:00:00.000Z"
+      updatedAt: "2026-05-21T00:00:00.000Z",
+      baseRevision: 0,
+      deviceId: "device-a",
+      changedFields: ["profile", "settings", "domainPolicies"]
     }
 
     const putResponse = await worker.fetch(
@@ -440,13 +541,186 @@ describe("log-worker", () => {
       }),
       env
     )
-    const body = (await getResponse.json()) as { snapshot: typeof snapshot }
+    const body = (await getResponse.json()) as { snapshot: typeof snapshot & { revision: number } }
 
     expect(putResponse.status).toBe(200)
     expect(getResponse.status).toBe(200)
     expect(body.snapshot.profile.fullName).toBe("山田 太郎")
+    expect(body.snapshot.revision).toBe(1)
     expect(body.snapshot.domainPolicies).toMatchObject({
       "example.com": "whitelist"
     })
+    expect(env.DB.snapshots[0]?.profile_json).not.toContain("山田")
+    expect(env.DB.snapshots[0]?.encryption_version).toBe(1)
+  })
+
+  it("merges disjoint sync changes and rejects overlapping stale changes", async () => {
+    const env = createEnv()
+    mockGoogleTokenInfo()
+    const baseSnapshot = {
+      schemaVersion: 1,
+      profile: {
+        familyName: "",
+        givenName: "",
+        fullName: "山田 太郎",
+        email: "taro@example.com",
+        phone: "",
+        organization: "",
+        postalCode: "",
+        prefecture: "",
+        city: "",
+        addressLine1: "",
+        addressLine2: ""
+      },
+      settings: {
+        enabled: true,
+        observeDynamicForms: true,
+        minMatchCount: 1
+      },
+      domainPolicies: {},
+      updatedAt: "2026-05-21T00:00:00.000Z",
+      baseRevision: 0,
+      deviceId: "device-a",
+      changedFields: ["profile"]
+    }
+
+    await worker.fetch(
+      new Request("https://logs.example.com/me/settings", {
+        method: "PUT",
+        headers: googleHeaders,
+        body: JSON.stringify(baseSnapshot)
+      }),
+      env
+    )
+
+    const mergedResponse = await worker.fetch(
+      new Request("https://logs.example.com/me/settings", {
+        method: "PUT",
+        headers: googleHeaders,
+        body: JSON.stringify({
+          ...baseSnapshot,
+          settings: {
+            enabled: false,
+            observeDynamicForms: true,
+            minMatchCount: 1
+          },
+          baseRevision: 0,
+          deviceId: "device-b",
+          changedFields: ["settings"]
+        })
+      }),
+      env
+    )
+    const mergedBody = (await mergedResponse.json()) as { merged: boolean; revision: number }
+
+    const conflictingResponse = await worker.fetch(
+      new Request("https://logs.example.com/me/settings", {
+        method: "PUT",
+        headers: googleHeaders,
+        body: JSON.stringify({
+          ...baseSnapshot,
+          profile: {
+            ...baseSnapshot.profile,
+            fullName: "佐藤 花子"
+          },
+          baseRevision: 1,
+          deviceId: "device-c",
+          changedFields: ["settings"]
+        })
+      }),
+      env
+    )
+
+    expect(mergedResponse.status).toBe(200)
+    expect(mergedBody).toMatchObject({
+      merged: true,
+      revision: 2
+    })
+    expect(conflictingResponse.status).toBe(409)
+  })
+
+  it("stores remote rules and returns log analysis reports", async () => {
+    const env = createEnv()
+    mockGoogleTokenInfo()
+
+    const rulesResponse = await worker.fetch(
+      new Request("https://logs.example.com/admin/rules", {
+        method: "PUT",
+        headers: authHeaders,
+        body: JSON.stringify({
+          blockedIdentityTokens: ["Customer Secret", "認証コード"]
+        })
+      }),
+      env
+    )
+    const userRulesResponse = await worker.fetch(
+      new Request("https://logs.example.com/me/rules", {
+        headers: googleHeaders
+      }),
+      env
+    )
+
+    await worker.fetch(
+      new Request("https://logs.example.com/me/events", {
+        method: "POST",
+        headers: googleHeaders,
+        body: JSON.stringify({
+          schemaVersion: 1,
+          source: "chrome-extension",
+          emittedAt: "2026-05-20T12:00:01.000Z",
+          events: [
+            {
+              ...event,
+              fieldSignature: "input|captcha-token",
+              detail: "captcha-like"
+            }
+          ]
+        })
+      }),
+      env
+    )
+
+    const analysisResponse = await worker.fetch(
+      new Request("https://logs.example.com/me/log-analysis?limit=1", {
+        headers: googleHeaders
+      }),
+      env
+    )
+    const rulesBody = (await userRulesResponse.json()) as { rules: { blockedIdentityTokens: string[] } }
+    const analysisBody = (await analysisResponse.json()) as { reports: Array<{ riskyEventCount: number; topHostnames: unknown[] }> }
+
+    expect(rulesResponse.status).toBe(200)
+    expect(rulesBody.rules.blockedIdentityTokens).toContain("customer secret")
+    expect(analysisResponse.status).toBe(200)
+    expect(analysisBody.reports[0]?.riskyEventCount).toBe(1)
+    expect(analysisBody.reports[0]?.topHostnames).toEqual([{ value: "example.com", count: 1 }])
+  })
+
+  it("runs scheduled global log analysis", async () => {
+    const env = createEnv()
+    await postLogs(env, {
+      schemaVersion: 1,
+      source: "chrome-extension",
+      emittedAt: "2026-05-20T12:00:01.000Z",
+      events: [event]
+    })
+
+    const pending: Promise<unknown>[] = []
+    worker.scheduled(
+      {
+        cron: "0 15 * * *",
+        scheduledTime: Date.now()
+      },
+      env,
+      {
+        waitUntil: (promise) => {
+          pending.push(promise)
+        }
+      }
+    )
+    await Promise.all(pending)
+
+    expect(env.DB.analysisReports).toHaveLength(1)
+    expect(env.DB.analysisReports[0]?.scope_user_id).toBeNull()
   })
 })

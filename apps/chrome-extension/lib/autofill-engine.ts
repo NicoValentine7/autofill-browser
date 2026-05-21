@@ -98,8 +98,8 @@ const hasHiddenComputedStyle = (field: FieldElement) => {
   return false
 }
 
-const isSensitiveAutofillTarget = (descriptor: FieldDescriptor) =>
-  hasIdentityToken(getDescriptorIdentity(descriptor), SENSITIVE_FIELD_IDENTITY_TOKENS)
+const isSensitiveAutofillTarget = (descriptor: FieldDescriptor, remoteTokens: string[] = []) =>
+  hasIdentityToken(getDescriptorIdentity(descriptor), [...SENSITIVE_FIELD_IDENTITY_TOKENS, ...remoteTokens])
 
 const compactDigits = (value: string) => value.replace(/\D+/g, "")
 
@@ -437,7 +437,7 @@ export const collectAutofillCandidates = (
     }
 
     const descriptor = buildFieldDescriptor(field, currentLocation)
-    if (isSensitiveAutofillTarget(descriptor)) {
+    if (isSensitiveAutofillTarget(descriptor, snapshot.remoteRules?.blockedIdentityTokens ?? [])) {
       continue
     }
 

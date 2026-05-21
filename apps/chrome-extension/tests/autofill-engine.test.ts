@@ -121,6 +121,26 @@ describe("autofill-engine", () => {
     })
   })
 
+  it("applies remote blocked identity tokens", () => {
+    document.body.innerHTML = `
+      <label for="customer-secret">Customer Secret</label>
+      <input id="customer-secret" name="customer_secret" />
+      <label for="email">Email</label>
+      <input id="email" name="email" />
+    `
+
+    const snapshot = createSnapshot()
+    snapshot.remoteRules = {
+      schemaVersion: 1,
+      blockedIdentityTokens: ["customer secret"],
+      updatedAt: "2026-05-21T00:00:00.000Z"
+    }
+    const values = valueById(snapshot)
+
+    expect(values["customer-secret"]).toBeUndefined()
+    expect(values.email).toBe("hanako@example.test")
+  })
+
   it("skips captcha, anti-abuse and auth-code fields", () => {
     document.body.innerHTML = `
       <textarea id="recaptcha" name="g-recaptcha-response"></textarea>

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react"
 
 import { createEmptyProfile, getDomainPolicy, isProfileConfigured, type DomainPolicy, type EventLogEntry, type StoredProfile } from "@autofill-browser/autofill-core"
 
-import { fetchSignedInUser, pullSyncedSnapshot, pushSyncedSnapshot } from "./account-sync"
+import { fetchRemoteRules, fetchSignedInUser, pullSyncedSnapshot, pushSyncedSnapshot, type SyncField } from "./account-sync"
 import { clearGoogleAuthTokens, getGoogleAccessToken } from "./google-auth"
 import type { ExtensionMessage } from "./messages"
 import { sendMessageToTab } from "./messages"
@@ -15,6 +15,7 @@ import {
   saveDomainPolicy,
   saveGoogleAuthUser,
   saveProfile,
+  saveRemoteRules,
   saveSettings,
   type StorageSnapshot
 } from "./storage"
@@ -127,7 +128,23 @@ function PopupApp() {
     return { nextSnapshot, nextTab }
   }
 
-  const pushSnapshotIfSignedIn = async (nextSnapshot: StorageSnapshot) => {
+  const refreshRemoteRulesIfSignedIn = async (googleAccessToken?: string | null) => {
+    const token = googleAccessToken ?? (await getGoogleAccessToken(false))
+    if (!token) {
+      return null
+    }
+
+    const remoteRules = await fetchRemoteRules(token)
+    if (!remoteRules) {
+      return null
+    }
+
+    const nextSnapshot = await saveRemoteRules(remoteRules)
+    setSnapshot(nextSnapshot)
+    return nextSnapshot
+  }
+
+  const pushSnapshotIfSignedIn = async (nextSnapshot: StorageSnapshot, changedFields: SyncField[] = ["profile", "settings", "domainPolicies"]) => {
     if (!nextSnapshot.googleAuthUser) {
       return nextSnapshot
     }
@@ -138,18 +155,28 @@ function PopupApp() {
       return nextSnapshot
     }
 
-    const remoteUpdatedAt = await pushSyncedSnapshot(googleAccessToken, nextSnapshot)
+    const result = await pushSyncedSnapshot(googleAccessToken, nextSnapshot, changedFields)
 
-    if (!remoteUpdatedAt) {
+    if (!result) {
       setStatus("ローカル保存したで。Google同期は失敗したわ")
       return nextSnapshot
     }
 
+    if ("conflict" in result) {
+      const syncedSnapshot = await applyRemoteSnapshot(result.snapshot ?? null)
+      setStatus("クラウド側の同じ項目が先に更新されてたから、そっちを反映したで")
+      return syncedSnapshot ?? nextSnapshot
+    }
+
     const syncedSnapshot = await saveAccountSyncState({
       lastPushedAt: new Date().toISOString(),
-      lastRemoteUpdatedAt: remoteUpdatedAt
+      lastRemoteUpdatedAt: result.updatedAt,
+      lastRevision: result.revision
     })
     setSnapshot(syncedSnapshot)
+    if (result.merged) {
+      setStatus("別PCの変更と差分マージして保存したで")
+    }
     return syncedSnapshot
   }
 
@@ -182,10 +209,7 @@ function PopupApp() {
       return nextSnapshot
     }
 
-    if (
-      nextSnapshot.accountSync.lastRemoteUpdatedAt &&
-      remoteSnapshot.updatedAt <= nextSnapshot.accountSync.lastRemoteUpdatedAt
-    ) {
+    if (remoteSnapshot.revision !== undefined && remoteSnapshot.revision <= (nextSnapshot.accountSync.lastRevision ?? 0)) {
       return nextSnapshot
     }
 
@@ -197,7 +221,11 @@ function PopupApp() {
   useEffect(() => {
     void refreshState().then(({ nextSnapshot }) => {
       setStatus("設定を確認できたで")
-      void pullRemoteSnapshotIfSignedIn(nextSnapshot)
+      void pullRemoteSnapshotIfSignedIn(nextSnapshot).then((pulledSnapshot) => {
+        if (pulledSnapshot.googleAuthUser) {
+          void refreshRemoteRulesIfSignedIn()
+        }
+      })
     })
   }, [])
 
@@ -233,7 +261,7 @@ function PopupApp() {
     })
     setSnapshot(nextSnapshot)
     await notifyActiveTab(activeTab.id, { type: "PROFILE_UPDATED" })
-    await pushSnapshotIfSignedIn(nextSnapshot)
+    await pushSnapshotIfSignedIn(nextSnapshot, ["profile"])
     setStatus("プロフィールを保存したで")
   }
 
@@ -244,7 +272,7 @@ function PopupApp() {
     })
     setSnapshot(nextSnapshot)
     await notifyActiveTab(activeTab.id, { type: "SETTINGS_UPDATED" })
-    await pushSnapshotIfSignedIn(nextSnapshot)
+    await pushSnapshotIfSignedIn(nextSnapshot, ["settings"])
     setStatus("設定を更新したで")
   }
 
@@ -259,7 +287,7 @@ function PopupApp() {
       url: activeTab.url
     })
     setSnapshot(nextSnapshot)
-    await pushSnapshotIfSignedIn(nextSnapshot)
+    await pushSnapshotIfSignedIn(nextSnapshot, ["domainPolicies"])
     await notifyActiveTab(activeTab.id, {
       type: "DOMAIN_POLICY_UPDATED",
       hostname: activeTab.hostname
@@ -301,6 +329,7 @@ function PopupApp() {
 
     const signedInSnapshot = await saveGoogleAuthUser(googleAuthUser)
     setSnapshot(signedInSnapshot)
+    await refreshRemoteRulesIfSignedIn(googleAccessToken)
     const remoteSnapshot = await pullSyncedSnapshot(googleAccessToken)
 
     if (remoteSnapshot) {
@@ -309,7 +338,7 @@ function PopupApp() {
       return
     }
 
-    await pushSnapshotIfSignedIn(signedInSnapshot)
+    await pushSnapshotIfSignedIn(signedInSnapshot, ["profile", "settings", "domainPolicies"])
     setStatus(`${googleAuthUser.email} でログインしてクラウドへ初期保存したで`)
   }
 

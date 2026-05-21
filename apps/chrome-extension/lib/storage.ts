@@ -21,7 +21,8 @@ const STORAGE_KEYS = {
   fieldMemory: "autofillFieldMemory",
   eventLog: "autofillEventLog",
   googleAuthUser: "autofillGoogleAuthUser",
-  accountSync: "autofillAccountSync"
+  accountSync: "autofillAccountSync",
+  remoteRules: "autofillRemoteRules"
 } as const
 
 const EVENT_LOG_LIMIT = 1000
@@ -35,9 +36,17 @@ export type GoogleAuthUser = {
 }
 
 export type AccountSyncState = {
+  deviceId?: string
+  lastRevision?: number
   lastPulledAt?: string
   lastPushedAt?: string
   lastRemoteUpdatedAt?: string
+}
+
+export type RemoteAutofillRules = {
+  schemaVersion: 1
+  blockedIdentityTokens: string[]
+  updatedAt: string
 }
 
 export type StorageSnapshot = {
@@ -48,6 +57,7 @@ export type StorageSnapshot = {
   eventLog: EventLogEntry[]
   googleAuthUser?: GoogleAuthUser
   accountSync: AccountSyncState
+  remoteRules?: RemoteAutofillRules
 }
 
 export type EventContext = {
@@ -64,7 +74,8 @@ type StorageUpdate = {
   fieldMemoryUpdates?: FieldMemoryEntry[]
   eventEntries?: NewEventLogEntry[]
   googleAuthUser?: GoogleAuthUser | null
-  accountSync?: AccountSyncState
+  accountSync?: Partial<AccountSyncState>
+  remoteRules?: RemoteAutofillRules
 }
 
 const createEventId = () =>
@@ -187,9 +198,22 @@ const normalizeGoogleAuthUser = (user?: Partial<GoogleAuthUser> | null): GoogleA
 }
 
 const normalizeAccountSyncState = (state?: Partial<AccountSyncState>): AccountSyncState => ({
+  deviceId: state?.deviceId?.trim() || createEventId(),
+  lastRevision:
+    typeof state?.lastRevision === "number" && Number.isFinite(state.lastRevision)
+      ? Math.max(0, Math.floor(state.lastRevision))
+      : 0,
   lastPulledAt: state?.lastPulledAt?.trim() || undefined,
   lastPushedAt: state?.lastPushedAt?.trim() || undefined,
   lastRemoteUpdatedAt: state?.lastRemoteUpdatedAt?.trim() || undefined
+})
+
+const normalizeRemoteRules = (rules?: Partial<RemoteAutofillRules>): RemoteAutofillRules => ({
+  schemaVersion: 1,
+  blockedIdentityTokens: Array.isArray(rules?.blockedIdentityTokens)
+    ? [...new Set(rules.blockedIdentityTokens.map((token) => token.trim().toLowerCase()).filter(Boolean))]
+    : [],
+  updatedAt: rules?.updatedAt?.trim() || "1970-01-01T00:00:00.000Z"
 })
 
 const redactSettingsPatch = (settings: Partial<AutofillSettings>) => JSON.stringify(settings)
@@ -223,7 +247,8 @@ export const getStorageSnapshot = async (): Promise<StorageSnapshot> => {
     fieldMemory: (stored[STORAGE_KEYS.fieldMemory] as Record<string, FieldMemoryEntry> | undefined) ?? {},
     eventLog: sortAndTrimEvents((stored[STORAGE_KEYS.eventLog] as EventLogEntry[] | undefined) ?? []),
     googleAuthUser: normalizeGoogleAuthUser(stored[STORAGE_KEYS.googleAuthUser] as Partial<GoogleAuthUser> | undefined),
-    accountSync: normalizeAccountSyncState(stored[STORAGE_KEYS.accountSync] as Partial<AccountSyncState> | undefined)
+    accountSync: normalizeAccountSyncState(stored[STORAGE_KEYS.accountSync] as Partial<AccountSyncState> | undefined),
+    remoteRules: normalizeRemoteRules(stored[STORAGE_KEYS.remoteRules] as Partial<RemoteAutofillRules> | undefined)
   }
 }
 
@@ -237,7 +262,8 @@ export const commitStorageChanges = async (update: StorageUpdate): Promise<Stora
     fieldMemory: { ...current.fieldMemory },
     eventLog: current.eventLog,
     googleAuthUser: hasGoogleAuthUserUpdate ? normalizeGoogleAuthUser(update.googleAuthUser) : current.googleAuthUser,
-    accountSync: update.accountSync ? normalizeAccountSyncState({ ...current.accountSync, ...update.accountSync }) : current.accountSync
+    accountSync: update.accountSync ? normalizeAccountSyncState({ ...current.accountSync, ...update.accountSync }) : current.accountSync,
+    remoteRules: update.remoteRules ? normalizeRemoteRules(update.remoteRules) : current.remoteRules
   }
 
   if (update.fieldMemoryUpdates) {
@@ -260,7 +286,8 @@ export const commitStorageChanges = async (update: StorageUpdate): Promise<Stora
     [STORAGE_KEYS.fieldMemory]: next.fieldMemory,
     [STORAGE_KEYS.eventLog]: next.eventLog,
     [STORAGE_KEYS.googleAuthUser]: next.googleAuthUser ?? null,
-    [STORAGE_KEYS.accountSync]: next.accountSync
+    [STORAGE_KEYS.accountSync]: next.accountSync,
+    [STORAGE_KEYS.remoteRules]: next.remoteRules
   })
 
   if (normalizedEventEntries.length > 0) {
@@ -344,13 +371,21 @@ export const clearGoogleAuthUser = async () =>
     googleAuthUser: null
   })
 
-export const saveAccountSyncState = async (accountSync: AccountSyncState) =>
+export const saveAccountSyncState = async (accountSync: Partial<AccountSyncState>) =>
   commitStorageChanges({
     accountSync
   })
 
+export const saveRemoteRules = async (remoteRules: RemoteAutofillRules) =>
+  commitStorageChanges({
+    remoteRules
+  })
+
 export const applySyncedSnapshot = async (
-  syncedSnapshot: Pick<StorageSnapshot, "profile" | "settings" | "domainPolicies">,
+  syncedSnapshot: Pick<StorageSnapshot, "profile" | "settings" | "domainPolicies"> & {
+    updatedAt?: string
+    revision?: number
+  },
   remoteUpdatedAt?: string
 ) =>
   commitStorageChanges({
@@ -359,6 +394,7 @@ export const applySyncedSnapshot = async (
     domainPolicies: syncedSnapshot.domainPolicies,
     accountSync: {
       lastPulledAt: new Date().toISOString(),
-      lastRemoteUpdatedAt: remoteUpdatedAt
+      lastRemoteUpdatedAt: remoteUpdatedAt ?? syncedSnapshot.updatedAt,
+      lastRevision: syncedSnapshot.revision ?? 0
     }
   })

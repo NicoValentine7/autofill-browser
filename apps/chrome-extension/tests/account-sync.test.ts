@@ -16,7 +16,10 @@ const snapshot: StorageSnapshot = {
   },
   fieldMemory: {},
   eventLog: [],
-  accountSync: {}
+  accountSync: {
+    deviceId: "device-a",
+    lastRevision: 3
+  }
 }
 
 describe("account-sync", () => {
@@ -25,6 +28,7 @@ describe("account-sync", () => {
     expect(buildWorkerUrl("/me/settings")).toBe(
       "https://autofill-browser-log-worker.y-elucidator.workers.dev/me/settings"
     )
+    expect(buildWorkerUrl("/me/rules")).toBe("https://autofill-browser-log-worker.y-elucidator.workers.dev/me/rules")
   })
 
   it("keeps cloud transport config out of synced settings", () => {
@@ -40,5 +44,10 @@ describe("account-sync", () => {
       minMatchCount: 1
     })
     expect(syncedSnapshot.settings).not.toHaveProperty("cloudLogSync")
+    expect(syncedSnapshot).toMatchObject({
+      baseRevision: 3,
+      deviceId: "device-a",
+      changedFields: ["profile", "settings", "domainPolicies"]
+    })
   })
 })
