@@ -9,7 +9,7 @@
     "typecheck:extension": "pnpm --filter chrome-extension typecheck",
     "test:extension": "pnpm --filter chrome-extension test",
     "dev:log-worker": "pnpm --dir apps/log-worker dev",
-    "deploy:log-worker": "pnpm --dir apps/log-worker deploy",
+    "deploy:log-worker": "pnpm --dir apps/log-worker run deploy",
     "typecheck:log-worker": "pnpm --filter chrome-extension exec tsc --noEmit -p ../log-worker/tsconfig.json",
     "test:log-worker": "pnpm --filter chrome-extension exec vitest run --root ../log-worker tests/index.test.ts",
     "setup:extension-key": "node scripts/setup-extension-key.mjs",
