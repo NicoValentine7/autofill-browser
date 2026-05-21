@@ -35,7 +35,8 @@ describe("PopupApp", () => {
     const fullNameInput = await screen.findByLabelText("氏名")
     expect((fullNameInput as HTMLInputElement).value).toBe("")
     expect(screen.getByText("まずプロフィールを登録")).toBeTruthy()
-    expect(screen.getByText("Worker設定済み")).toBeTruthy()
+    expect(screen.queryByText("詳細設定")).toBeNull()
+    expect(screen.queryByText("Worker URL")).toBeNull()
   })
 
   it("saves profile updates and shows the regular view", async () => {
@@ -95,48 +96,6 @@ describe("PopupApp", () => {
       expect(mock.storageData.autofillDomainPolicies).toMatchObject({
         "example.com": "blacklist"
       })
-    })
-  })
-
-  it("saves advanced cloud log settings and redacts the shared token from event details", async () => {
-    const mock = createChromeMock(
-      {
-        autofillProfile: {
-          ...createEmptyProfile(),
-          fullName: "山田 太郎"
-        }
-      },
-      {
-        id: 1,
-        url: "https://example.com/form"
-      }
-    )
-    ;(globalThis as { chrome: typeof chrome }).chrome = mock.chromeMock as unknown as typeof chrome
-
-    render(createElement(PopupApp))
-
-    const user = userEvent.setup()
-    await user.click(await screen.findByText("詳細設定"))
-    await user.clear(screen.getByLabelText("Worker URL"))
-    await user.type(screen.getByLabelText("Worker URL"), "https://logs.example.com/autofill")
-    await user.type(screen.getByLabelText("共有トークン（旧方式）"), "secret-token")
-    await user.click(screen.getByRole("button", { name: "クラウドログ設定を保存" }))
-
-    await waitFor(() => {
-      expect(mock.storageData.autofillSettings).toMatchObject({
-        cloudLogSync: {
-          endpointUrl: "https://logs.example.com/autofill",
-          bearerToken: "secret-token",
-          includeFieldValues: true
-        }
-      })
-    })
-
-    const eventLog = mock.storageData.autofillEventLog as EventLogEntry[]
-    expect(eventLog[0]?.detail).toContain("[configured]")
-    expect(eventLog[0]?.detail).not.toContain("secret-token")
-    expect(mock.runtimeMessages[0]).toMatchObject({
-      type: "SYNC_EVENT_LOGS_TO_CLOUD"
     })
   })
 
@@ -309,6 +268,7 @@ describe("PopupApp", () => {
 
     const items = await screen.findAllByRole("listitem")
     expect(items).toHaveLength(20)
+    expect(screen.queryByText(/event-0/)).toBeNull()
     expect(screen.queryByText(/event-24/)).toBeNull()
   })
 })

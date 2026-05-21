@@ -110,20 +110,12 @@ const formatEvent = (event: EventLogEntry) => {
   if (event.hostname) {
     parts.push(event.hostname)
   }
-  if (event.detail) {
-    parts.push(event.detail)
-  }
   return parts.join(" / ")
 }
 
 function PopupApp() {
   const [snapshot, setSnapshot] = useState<StorageSnapshot | null>(null)
   const [profileForm, setProfileForm] = useState<StoredProfile>(createEmptyProfile())
-  const [cloudLogSyncForm, setCloudLogSyncForm] = useState<StorageSnapshot["settings"]["cloudLogSync"]>({
-    endpointUrl: "",
-    bearerToken: "",
-    includeFieldValues: true
-  })
   const [activeTab, setActiveTab] = useState<ActiveTabContext>({ hostname: "", url: "" })
   const [status, setStatus] = useState("読み込み中やで")
 
@@ -131,7 +123,6 @@ function PopupApp() {
     const [nextSnapshot, nextTab] = await Promise.all([getStorageSnapshot(), getActiveTabContext()])
     setSnapshot(nextSnapshot)
     setProfileForm(nextSnapshot.profile)
-    setCloudLogSyncForm(nextSnapshot.settings.cloudLogSync)
     setActiveTab(nextTab)
     return { nextSnapshot, nextTab }
   }
@@ -159,43 +150,12 @@ function PopupApp() {
   }
 
   const profileReady = isProfileConfigured(snapshot.profile)
-  const endpointConfigured = cloudLogSyncForm.endpointUrl.trim().length > 0
 
   const handleProfileFieldChange = (key: keyof StoredProfile, value: string) => {
     setProfileForm((current) => ({
       ...current,
       [key]: value
     }))
-  }
-
-  const saveDraftCloudLogSettings = async () => {
-    const endpointUrl = cloudLogSyncForm.endpointUrl.trim()
-    if (endpointUrl && !endpointUrl.startsWith("https://")) {
-      setStatus("クラウド保存は https のWorker URLが必要やで")
-      return null
-    }
-
-    if (
-      endpointUrl === snapshot.settings.cloudLogSync.endpointUrl &&
-      cloudLogSyncForm.bearerToken === snapshot.settings.cloudLogSync.bearerToken &&
-      cloudLogSyncForm.includeFieldValues === snapshot.settings.cloudLogSync.includeFieldValues
-    ) {
-      return snapshot
-    }
-
-    const nextSnapshot = await saveSettings(
-      {
-        cloudLogSync: cloudLogSyncForm
-      },
-      "popup-ui",
-      {
-        hostname: activeTab.hostname,
-        url: activeTab.url
-      }
-    )
-    setSnapshot(nextSnapshot)
-    setCloudLogSyncForm(nextSnapshot.settings.cloudLogSync)
-    return nextSnapshot
   }
 
   const pushSnapshotIfSignedIn = async (nextSnapshot: StorageSnapshot) => {
@@ -250,23 +210,6 @@ function PopupApp() {
     setStatus("設定を更新したで")
   }
 
-  const handleCloudLogSyncChange = (patch: Partial<StorageSnapshot["settings"]["cloudLogSync"]>) => {
-    setCloudLogSyncForm((current) => ({
-      ...current,
-      ...patch
-    }))
-  }
-
-  const handleCloudLogSyncSave = async () => {
-    const nextSnapshot = await saveDraftCloudLogSettings()
-    if (!nextSnapshot) {
-      return
-    }
-
-    await pushSnapshotIfSignedIn(nextSnapshot)
-    setStatus("クラウドログ設定を保存したで")
-  }
-
   const handlePolicyChange = async (policy: DomainPolicy) => {
     if (!activeTab.hostname) {
       setStatus("このタブではドメイン制御できへん")
@@ -306,13 +249,8 @@ function PopupApp() {
   }
 
   const handleGoogleLogin = async () => {
-    const snapshotWithEndpoint = await saveDraftCloudLogSettings()
-    if (!snapshotWithEndpoint) {
-      return
-    }
-
-    if (!snapshotWithEndpoint.settings.cloudLogSync.endpointUrl.trim()) {
-      setStatus("GoogleログインにはWorker URLが必要やで")
+    if (!snapshot.settings.cloudLogSync.endpointUrl.trim()) {
+      setStatus("Googleログインには同期先設定が必要やで")
       return
     }
 
@@ -322,7 +260,7 @@ function PopupApp() {
       return
     }
 
-    const googleAuthUser = await fetchSignedInUser(snapshotWithEndpoint.settings.cloudLogSync.endpointUrl, googleAccessToken)
+    const googleAuthUser = await fetchSignedInUser(snapshot.settings.cloudLogSync.endpointUrl, googleAccessToken)
     if (!googleAuthUser) {
       setStatus("WorkerでGoogleログインを確認できへんかった")
       return
@@ -342,9 +280,8 @@ function PopupApp() {
   }
 
   const handlePushSync = async () => {
-    const snapshotWithEndpoint = await saveDraftCloudLogSettings()
-    if (!snapshotWithEndpoint?.settings.cloudLogSync.endpointUrl.trim()) {
-      setStatus("同期にはWorker URLが必要やで")
+    if (!snapshot.settings.cloudLogSync.endpointUrl.trim()) {
+      setStatus("同期先設定が見つからへんで")
       return
     }
 
@@ -355,9 +292,9 @@ function PopupApp() {
     }
 
     const remoteUpdatedAt = await pushSyncedSnapshot(
-      snapshotWithEndpoint.settings.cloudLogSync.endpointUrl,
+      snapshot.settings.cloudLogSync.endpointUrl,
       googleAccessToken,
-      snapshotWithEndpoint
+      snapshot
     )
     if (!remoteUpdatedAt) {
       setStatus("クラウド保存に失敗したで")
@@ -373,9 +310,8 @@ function PopupApp() {
   }
 
   const handlePullSync = async () => {
-    const snapshotWithEndpoint = await saveDraftCloudLogSettings()
-    if (!snapshotWithEndpoint?.settings.cloudLogSync.endpointUrl.trim()) {
-      setStatus("復元にはWorker URLが必要やで")
+    if (!snapshot.settings.cloudLogSync.endpointUrl.trim()) {
+      setStatus("復元には同期先設定が必要やで")
       return
     }
 
@@ -385,7 +321,7 @@ function PopupApp() {
       return
     }
 
-    const remoteSnapshot = await pullSyncedSnapshot(snapshotWithEndpoint.settings.cloudLogSync.endpointUrl, googleAccessToken)
+    const remoteSnapshot = await pullSyncedSnapshot(snapshot.settings.cloudLogSync.endpointUrl, googleAccessToken)
     if (!remoteSnapshot) {
       setStatus("復元できるクラウド設定がまだ無いで")
       return
@@ -394,7 +330,6 @@ function PopupApp() {
     const nextSnapshot = await applySyncedSnapshot(remoteSnapshot, remoteSnapshot.updatedAt)
     setSnapshot(nextSnapshot)
     setProfileForm(nextSnapshot.profile)
-    setCloudLogSyncForm(nextSnapshot.settings.cloudLogSync)
     await notifyActiveTab(activeTab.id, { type: "SETTINGS_UPDATED" })
     await notifyActiveTab(activeTab.id, { type: "PROFILE_UPDATED" })
     setStatus("クラウドから設定を復元したで")
@@ -423,9 +358,6 @@ function PopupApp() {
           </span>
           <span style={{ borderRadius: 999, padding: "4px 8px", background: snapshot.googleAuthUser ? "#14532d" : "#713f12", fontSize: 11 }}>
             {snapshot.googleAuthUser ? "Google同期ON" : "Google未ログイン"}
-          </span>
-          <span style={{ borderRadius: 999, padding: "4px 8px", background: endpointConfigured ? "#1e3a8a" : "#7f1d1d", fontSize: 11 }}>
-            {endpointConfigured ? "Worker設定済み" : "Worker未設定"}
           </span>
         </div>
         <p style={{ margin: "8px 0 0", fontSize: 12, color: "#99f6e4" }}>{status}</p>
@@ -559,88 +491,6 @@ function PopupApp() {
           このページで再実行
         </button>
       </section>
-
-      <details style={sectionStyle}>
-        <summary style={{ cursor: "pointer", fontSize: 14, fontWeight: 700 }}>詳細設定</summary>
-        <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
-          <label style={{ display: "grid", gap: 4, fontSize: 12 }}>
-            <span>Worker URL</span>
-            <input
-              type="url"
-              value={cloudLogSyncForm.endpointUrl}
-              onChange={(event) => {
-                handleCloudLogSyncChange({
-                  endpointUrl: event.target.value
-                })
-              }}
-              placeholder="空なら標準の保存先を使う"
-              style={inputStyle}
-            />
-          </label>
-          <label style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
-            <span>動的フォームも監視</span>
-            <input
-              type="checkbox"
-              checked={snapshot.settings.observeDynamicForms}
-              onChange={(event) => {
-                void handleSettingsChange({
-                  observeDynamicForms: event.target.checked
-                })
-              }}
-            />
-          </label>
-          <label style={{ display: "grid", gap: 4, fontSize: 12 }}>
-            <span>最小マッチ数</span>
-            <input
-              type="number"
-              min={1}
-              value={snapshot.settings.minMatchCount}
-              onChange={(event) => {
-                void handleSettingsChange({
-                  minMatchCount: Math.max(1, Number(event.target.value) || 1)
-                })
-              }}
-              style={inputStyle}
-            />
-          </label>
-          <label style={{ display: "grid", gap: 4, fontSize: 12 }}>
-            <span>共有トークン（旧方式）</span>
-            <input
-              type="password"
-              value={cloudLogSyncForm.bearerToken}
-              onChange={(event) => {
-                handleCloudLogSyncChange({
-                  bearerToken: event.target.value
-                })
-              }}
-              placeholder="旧共有トークン方式だけで使う"
-              style={inputStyle}
-            />
-          </label>
-          <label style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
-            <span>入力値も送信</span>
-            <input
-              type="checkbox"
-              checked={cloudLogSyncForm.includeFieldValues}
-              onChange={(event) => {
-                handleCloudLogSyncChange({
-                  includeFieldValues: event.target.checked
-                })
-              }}
-            />
-          </label>
-          <button
-            type="button"
-            onClick={handleCloudLogSyncSave}
-            style={{
-              width: "100%",
-              ...buttonStyle,
-              background: "#bae6fd"
-            }}>
-            クラウドログ設定を保存
-          </button>
-        </div>
-      </details>
 
       <details style={sectionStyle} open={snapshot.eventLog.length > 0}>
         <summary style={{ cursor: "pointer", fontSize: 14, fontWeight: 700 }}>最近の履歴</summary>
