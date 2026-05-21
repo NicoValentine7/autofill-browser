@@ -136,6 +136,19 @@ pnpm dev:log-worker
 
 共有トークンで使う管理用APIは `GET /admin/logs?limit=50`、`GET/PUT /admin/rules`、`GET /admin/log-analysis?limit=7` です。`wrangler.jsonc` には毎日 15:00 UTC、つまり日本時間 00:00 のCron Triggerを設定しており、直近24時間の全体ログ解析を `log_analysis_reports` に保存します。
 
+管理画面は Worker 内蔵の `GET /admin` です。画面に `CLOUD_LOG_INGEST_TOKEN` を入力すると、最近のログ、日次ログ解析、Remote rules、同期履歴を確認できます。tokenはブラウザのlocalStorageにだけ保存されます。
+
+この端末では管理用tokenを `.local/cloud-admin-token.txt` に置いています。`.local/` はgit管理外です。
+
+設定同期は最新snapshotを `user_sync_snapshots` に持ちつつ、保存・restoreの履歴を `user_sync_snapshot_history` に残します。Googleユーザー向けには `GET /me/settings/history?limit=20` と `POST /me/settings/history` があり、`POST` bodyに `{ "revision": 1 }` のように指定すると、そのrevisionのsnapshotへ巻き戻せます。
+
+Google同期の実Worker E2Eは以下で実行できます。`VERIFY_D1_RAW=1` を付けるとWranglerでD1の生値も確認し、テスト用markerが暗号化済みprofileに平文で残っていないことを検査します。
+
+```bash
+GOOGLE_ACCESS_TOKEN=<google-access-token> pnpm verify:google-sync-e2e
+GOOGLE_ACCESS_TOKEN=<google-access-token> VERIFY_D1_RAW=1 pnpm verify:google-sync-e2e
+```
+
 ### テストサイト
 
 ```bash

@@ -13,6 +13,7 @@ local.properties
 *.iml
 .idea
 captures
+.local/
 .cxx
 *.apk
 *.aab

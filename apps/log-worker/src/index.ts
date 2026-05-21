@@ -122,6 +122,16 @@ type SyncSnapshotRow = {
   encryption_version?: number | null
 }
 
+type SyncSnapshotHistoryRow = SyncSnapshotRow & {
+  id: string
+  revision: number
+  device_id: string | null
+  changed_fields_json: string
+  encryption_version: number
+  action: string
+  created_at: string
+}
+
 type RemoteRules = {
   schemaVersion: 1
   blockedIdentityTokens: string[]
@@ -172,6 +182,15 @@ const json = (data: unknown, init: ResponseInit = {}) =>
     ...init,
     headers: {
       ...jsonHeaders,
+      ...init.headers
+    }
+  })
+
+const html = (markup: string, init: ResponseInit = {}) =>
+  new Response(markup, {
+    ...init,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
       ...init.headers
     }
   })
@@ -810,12 +829,26 @@ const storeSyncSnapshot = async (
   payload: SyncedSnapshot,
   updatedAt: string,
   revision: number,
-  changedFields: SyncField[]
+  changedFields: SyncField[],
+  action: "save" | "restore" = "save"
 ) => {
   const encryptedProfile = await encryptJson(env, payload.profile)
   if (!encryptedProfile) {
     return false
   }
+
+  const deviceId = payload.deviceId ?? null
+  const changedFieldsJson = JSON.stringify(changedFields)
+  const rawJson = JSON.stringify({
+    schemaVersion: payload.schemaVersion,
+    profileEncrypted: true,
+    settings: payload.settings,
+    domainPolicies: payload.domainPolicies,
+    updatedAt,
+    revision,
+    deviceId: payload.deviceId,
+    changedFields
+  })
 
   await env.DB.prepare(
     `INSERT OR REPLACE INTO user_sync_snapshots (
@@ -839,20 +872,47 @@ const storeSyncSnapshot = async (
       JSON.stringify(payload.settings),
       JSON.stringify(payload.domainPolicies),
       updatedAt,
-      JSON.stringify({
-        schemaVersion: payload.schemaVersion,
-        profileEncrypted: true,
-        settings: payload.settings,
-        domainPolicies: payload.domainPolicies,
-        updatedAt,
-        revision,
-        deviceId: payload.deviceId,
-        changedFields
-      }),
+      rawJson,
       revision,
-      payload.deviceId ?? null,
-      JSON.stringify(changedFields),
+      deviceId,
+      changedFieldsJson,
       1
+    )
+    .run()
+
+  await env.DB.prepare(
+    `INSERT OR REPLACE INTO user_sync_snapshot_history (
+      id,
+      user_id,
+      revision,
+      schema_version,
+      profile_json,
+      settings_json,
+      domain_policies_json,
+      updated_at,
+      device_id,
+      changed_fields_json,
+      encryption_version,
+      raw_json,
+      action,
+      created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+    .bind(
+      crypto.randomUUID(),
+      userId,
+      revision,
+      payload.schemaVersion,
+      encryptedProfile,
+      JSON.stringify(payload.settings),
+      JSON.stringify(payload.domainPolicies),
+      updatedAt,
+      deviceId,
+      changedFieldsJson,
+      1,
+      rawJson,
+      action,
+      new Date().toISOString()
     )
     .run()
 
@@ -954,6 +1014,178 @@ const handleGetSyncSettings = async (env: Env, auth: AuthContext) => {
 
   return json({
     snapshot
+  })
+}
+
+const getSyncHistoryRows = async (env: Env, userId: string | null, limit: number) => {
+  const statement = userId
+    ? env.DB.prepare(
+        `SELECT
+          id,
+          user_id,
+          revision,
+          schema_version,
+          profile_json,
+          settings_json,
+          domain_policies_json,
+          updated_at,
+          device_id,
+          changed_fields_json,
+          encryption_version,
+          raw_json,
+          action,
+          created_at
+        FROM user_sync_snapshot_history
+        WHERE user_id = ?
+        ORDER BY revision DESC, created_at DESC
+        LIMIT ?`
+      ).bind(userId, limit)
+    : env.DB.prepare(
+        `SELECT
+          id,
+          user_id,
+          revision,
+          schema_version,
+          profile_json,
+          settings_json,
+          domain_policies_json,
+          updated_at,
+          device_id,
+          changed_fields_json,
+          encryption_version,
+          raw_json,
+          action,
+          created_at
+        FROM user_sync_snapshot_history
+        ORDER BY created_at DESC
+        LIMIT ?`
+      ).bind(limit)
+
+  const result = await statement.all<SyncSnapshotHistoryRow>()
+  return result.results ?? []
+}
+
+const getSyncHistoryRowByRevision = async (env: Env, userId: string, revision: number) => {
+  const result = await env.DB.prepare(
+    `SELECT
+      id,
+      user_id,
+      revision,
+      schema_version,
+      profile_json,
+      settings_json,
+      domain_policies_json,
+      updated_at,
+      device_id,
+      changed_fields_json,
+      encryption_version,
+      raw_json,
+      action,
+      created_at
+    FROM user_sync_snapshot_history
+    WHERE user_id = ? AND revision = ?
+    LIMIT 1`
+  )
+    .bind(userId, revision)
+    .all<SyncSnapshotHistoryRow>()
+
+  return result.results?.[0] ?? null
+}
+
+const decodeSyncHistoryRow = async (env: Env, row: SyncSnapshotHistoryRow) => {
+  const snapshot = await decodeSyncSnapshotRow(env, row)
+  if (!snapshot) {
+    return null
+  }
+
+  return {
+    ...snapshot,
+    revision: row.revision,
+    deviceId: row.device_id ?? undefined,
+    changedFields: parseChangedFieldsJson(row.changed_fields_json)
+  }
+}
+
+const summarizeHistoryRow = (row: SyncSnapshotHistoryRow) => ({
+  id: row.id,
+  userId: row.user_id,
+  revision: row.revision,
+  deviceId: row.device_id,
+  changedFields: parseChangedFieldsJson(row.changed_fields_json),
+  updatedAt: row.updated_at,
+  action: row.action,
+  createdAt: row.created_at
+})
+
+const handleGetSyncHistory = async (request: Request, env: Env, auth: AuthContext) => {
+  const url = new URL(request.url)
+  const limit = normalizeLimit(url)
+  const userId = auth.type === "google" ? auth.user.id : null
+  const rows = await getSyncHistoryRows(env, userId, limit)
+
+  return json({
+    history: rows.map(summarizeHistoryRow)
+  })
+}
+
+const parseRevisionPayload = async (request: Request) => {
+  let body: unknown
+  try {
+    body = await request.json()
+  } catch (_error) {
+    return null
+  }
+
+  if (!isRecord(body) || typeof body.revision !== "number" || !Number.isFinite(body.revision)) {
+    return null
+  }
+
+  return Math.max(1, Math.floor(body.revision))
+}
+
+const handleRestoreSyncHistory = async (request: Request, env: Env, auth: AuthContext) => {
+  if (auth.type !== "google") {
+    return json({ error: "google auth required" }, { status: 403 })
+  }
+
+  const revisionToRestore = await parseRevisionPayload(request)
+  if (!revisionToRestore) {
+    return json({ error: "malformed payload" }, { status: 400 })
+  }
+
+  const historyRow = await getSyncHistoryRowByRevision(env, auth.user.id, revisionToRestore)
+  if (!historyRow) {
+    return json({ error: "history not found" }, { status: 404 })
+  }
+
+  const snapshot = await decodeSyncHistoryRow(env, historyRow)
+  if (!snapshot) {
+    return json({ error: "could not decrypt history snapshot" }, { status: 500 })
+  }
+
+  const currentRow = await getSyncSnapshotRow(env, auth.user.id)
+  const nextRevision = normalizeRevision(currentRow?.revision) + 1
+  const updatedAt = new Date().toISOString()
+  const restoredSnapshot = {
+    ...snapshot,
+    updatedAt,
+    revision: nextRevision,
+    changedFields: [...SYNC_FIELDS]
+  }
+  const stored = await storeSyncSnapshot(env, auth.user.id, restoredSnapshot, updatedAt, nextRevision, [...SYNC_FIELDS], "restore")
+
+  if (!stored) {
+    return json({ error: "encryption key is not configured" }, { status: 500 })
+  }
+
+  return json({
+    ok: true,
+    restoredFromRevision: revisionToRestore,
+    revision: nextRevision,
+    snapshot: {
+      ...restoredSnapshot,
+      revision: nextRevision
+    }
   })
 }
 
@@ -1252,6 +1484,172 @@ const handleGetLogAnalysis = async (request: Request, env: Env, auth: AuthContex
   })
 }
 
+const adminDashboardHtml = `<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Autofill Browser Admin</title>
+    <style>
+      :root { color-scheme: dark; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      body { margin: 0; background: #10131a; color: #f8fafc; }
+      main { width: min(1120px, calc(100vw - 32px)); margin: 0 auto; padding: 24px 16px 48px; display: grid; gap: 16px; }
+      header, section { background: #172030; border: 1px solid #253244; border-radius: 8px; padding: 16px; }
+      h1, h2 { margin: 0 0 12px; line-height: 1.2; }
+      h1 { font-size: 22px; }
+      h2 { font-size: 16px; }
+      label { display: grid; gap: 6px; font-size: 12px; color: #cbd5e1; }
+      input, textarea { width: 100%; box-sizing: border-box; border: 1px solid #334155; border-radius: 8px; background: #0f172a; color: #f8fafc; padding: 10px 12px; }
+      textarea { min-height: 96px; resize: vertical; }
+      button { border: 0; border-radius: 8px; padding: 10px 12px; font-weight: 700; color: #10131a; background: #99f6e4; cursor: pointer; }
+      button.secondary { background: #fde68a; }
+      .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+      .metric { background: #0f172a; border-radius: 8px; padding: 12px; }
+      .metric strong { display: block; font-size: 22px; margin-top: 4px; }
+      pre { overflow: auto; max-height: 360px; margin: 0; background: #0f172a; border-radius: 8px; padding: 12px; color: #dbeafe; }
+      table { width: 100%; border-collapse: collapse; font-size: 12px; }
+      th, td { border-bottom: 1px solid #334155; padding: 8px; text-align: left; vertical-align: top; }
+      .muted { color: #94a3b8; font-size: 12px; }
+      .status { color: #99f6e4; font-size: 12px; min-height: 18px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Autofill Browser Admin</h1>
+        <p class="muted">管理tokenはこのブラウザのlocalStorageだけに保存します。</p>
+        <div class="toolbar">
+          <label style="flex: 1 1 360px;">Admin Bearer token
+            <input id="token" type="password" autocomplete="off" placeholder="CLOUD_LOG_INGEST_TOKEN" />
+          </label>
+          <button id="save-token" type="button">保存</button>
+          <button id="refresh" type="button" class="secondary">更新</button>
+        </div>
+        <p id="status" class="status"></p>
+      </header>
+
+      <section>
+        <h2>日次ログ解析</h2>
+        <div id="metrics" class="grid"></div>
+        <pre id="analysis">[]</pre>
+      </section>
+
+      <section>
+        <h2>Remote rules</h2>
+        <label>Blocked identity tokens
+          <textarea id="rules"></textarea>
+        </label>
+        <div class="toolbar" style="margin-top: 8px;">
+          <button id="save-rules" type="button">Rulesを保存</button>
+        </div>
+      </section>
+
+      <section>
+        <h2>最近のログ</h2>
+        <pre id="logs">[]</pre>
+      </section>
+
+      <section>
+        <h2>同期履歴</h2>
+        <div id="history"></div>
+      </section>
+    </main>
+    <script>
+      const tokenInput = document.querySelector("#token");
+      const statusEl = document.querySelector("#status");
+      const analysisEl = document.querySelector("#analysis");
+      const metricsEl = document.querySelector("#metrics");
+      const rulesEl = document.querySelector("#rules");
+      const logsEl = document.querySelector("#logs");
+      const historyEl = document.querySelector("#history");
+
+      tokenInput.value = localStorage.getItem("autofillAdminToken") || "";
+
+      const setStatus = (message) => {
+        statusEl.textContent = message;
+      };
+
+      const adminFetch = async (path, init = {}) => {
+        const token = tokenInput.value.trim();
+        const response = await fetch(path, {
+          ...init,
+          headers: {
+            "content-type": "application/json",
+            ...(init.headers || {}),
+            authorization: "Bearer " + token
+          }
+        });
+        const body = await response.json().catch(() => null);
+        if (!response.ok) {
+          throw new Error((body && body.error) || response.statusText);
+        }
+        return body;
+      };
+
+      const renderMetrics = (report) => {
+        const metrics = [
+          ["total", report?.totalEvents ?? 0],
+          ["filled", report?.fieldFilledCount ?? 0],
+          ["corrections", report?.correctionCount ?? 0],
+          ["risky", report?.riskyEventCount ?? 0]
+        ];
+        metricsEl.innerHTML = metrics.map(([label, value]) => '<div class="metric"><span>' + label + '</span><strong>' + value + '</strong></div>').join("");
+      };
+
+      const renderHistory = (history) => {
+        if (!history.length) {
+          historyEl.innerHTML = '<p class="muted">履歴なし</p>';
+          return;
+        }
+        historyEl.innerHTML = '<table><thead><tr><th>revision</th><th>action</th><th>device</th><th>fields</th><th>created</th></tr></thead><tbody>' +
+          history.map((row) => '<tr><td>' + row.revision + '</td><td>' + row.action + '</td><td>' + (row.deviceId || '') + '</td><td>' + row.changedFields.join(", ") + '</td><td>' + row.createdAt + '</td></tr>').join("") +
+          '</tbody></table>';
+      };
+
+      const refresh = async () => {
+        setStatus("読み込み中...");
+        const [analysis, rules, logs, history] = await Promise.all([
+          adminFetch("/admin/log-analysis?limit=7"),
+          adminFetch("/admin/rules"),
+          adminFetch("/admin/logs?limit=20"),
+          adminFetch("/admin/sync-history?limit=20")
+        ]);
+        const latest = analysis.reports?.[0];
+        renderMetrics(latest);
+        analysisEl.textContent = JSON.stringify(analysis.reports || [], null, 2);
+        rulesEl.value = (rules.rules?.blockedIdentityTokens || []).join("\\n");
+        logsEl.textContent = JSON.stringify(logs.logs || [], null, 2);
+        renderHistory(history.history || []);
+        setStatus("更新したで");
+      };
+
+      document.querySelector("#save-token").addEventListener("click", () => {
+        localStorage.setItem("autofillAdminToken", tokenInput.value.trim());
+        setStatus("tokenを保存したで");
+      });
+      document.querySelector("#refresh").addEventListener("click", () => {
+        refresh().catch((error) => setStatus("失敗: " + error.message));
+      });
+      document.querySelector("#save-rules").addEventListener("click", async () => {
+        try {
+          await adminFetch("/admin/rules", {
+            method: "PUT",
+            body: JSON.stringify({
+              blockedIdentityTokens: rulesEl.value.split("\\n").map((line) => line.trim()).filter(Boolean)
+            })
+          });
+          await refresh();
+        } catch (error) {
+          setStatus("保存失敗: " + error.message);
+        }
+      });
+    </script>
+  </body>
+</html>`
+
+const handleAdminDashboard = () => html(adminDashboardHtml)
+
 const handleRequest = async (request: Request, env: Env) => {
   if (request.method === "OPTIONS") {
     return new Response(null, {
@@ -1261,8 +1659,21 @@ const handleRequest = async (request: Request, env: Env) => {
   }
 
   const url = new URL(request.url)
-  const googleRoutes = new Set(["/me", "/me/settings", "/me/events", "/me/rules", "/me/log-analysis", "/auth/me", "/sync/settings"])
-  const adminRoutes = new Set(["/admin/logs", "/admin/rules", "/admin/log-analysis"])
+  if (url.pathname === "/admin" || url.pathname === "/admin/") {
+    return handleAdminDashboard()
+  }
+
+  const googleRoutes = new Set([
+    "/me",
+    "/me/settings",
+    "/me/settings/history",
+    "/me/events",
+    "/me/rules",
+    "/me/log-analysis",
+    "/auth/me",
+    "/sync/settings"
+  ])
+  const adminRoutes = new Set(["/admin/logs", "/admin/rules", "/admin/log-analysis", "/admin/sync-history"])
   const legacyRoutes = new Set(["/logs"])
 
   if (![...googleRoutes, ...adminRoutes, ...legacyRoutes].includes(url.pathname)) {
@@ -1293,6 +1704,10 @@ const handleRequest = async (request: Request, env: Env) => {
 
     if (url.pathname === "/admin/log-analysis" && request.method === "GET") {
       return handleGetLogAnalysis(request, env, auth)
+    }
+
+    if (url.pathname === "/admin/sync-history" && request.method === "GET") {
+      return handleGetSyncHistory(request, env, auth)
     }
 
     return json({ error: "method not allowed" }, { status: 405 })
@@ -1330,6 +1745,14 @@ const handleRequest = async (request: Request, env: Env) => {
 
   if ((url.pathname === "/me/settings" || url.pathname === "/sync/settings") && request.method === "GET") {
     return handleGetSyncSettings(env, auth)
+  }
+
+  if (url.pathname === "/me/settings/history" && request.method === "GET") {
+    return handleGetSyncHistory(request, env, auth)
+  }
+
+  if (url.pathname === "/me/settings/history" && request.method === "POST") {
+    return handleRestoreSyncHistory(request, env, auth)
   }
 
   if (url.pathname === "/me/events" && request.method === "POST") {

@@ -28,6 +28,16 @@ type StoredSyncSnapshotRow = {
   encryption_version: number
 }
 
+type StoredSyncSnapshotHistoryRow = StoredSyncSnapshotRow & {
+  id: string
+  revision: number
+  device_id: string | null
+  changed_fields_json: string
+  encryption_version: number
+  action: string
+  created_at: string
+}
+
 type StoredRemoteRulesRow = {
   key: string
   schema_version: number
@@ -149,6 +159,31 @@ class FakeStatement implements D1PreparedStatement {
       }
     }
 
+    if (this.query.includes("INSERT OR REPLACE INTO user_sync_snapshot_history")) {
+      const row: StoredSyncSnapshotHistoryRow = {
+        id: String(this.values[0]),
+        user_id: String(this.values[1]),
+        revision: Number(this.values[2]),
+        schema_version: Number(this.values[3]),
+        profile_json: String(this.values[4]),
+        settings_json: String(this.values[5]),
+        domain_policies_json: String(this.values[6]),
+        updated_at: String(this.values[7]),
+        device_id: this.values[8] === null ? null : String(this.values[8]),
+        changed_fields_json: String(this.values[9] ?? "[]"),
+        encryption_version: Number(this.values[10] ?? 0),
+        raw_json: String(this.values[11]),
+        action: String(this.values[12]),
+        created_at: String(this.values[13])
+      }
+      const existingIndex = this.db.snapshotHistory.findIndex((existingRow) => existingRow.id === row.id)
+      if (existingIndex >= 0) {
+        this.db.snapshotHistory[existingIndex] = row
+      } else {
+        this.db.snapshotHistory.push(row)
+      }
+    }
+
     if (this.query.includes("INSERT OR REPLACE INTO remote_rules")) {
       const row: StoredRemoteRulesRow = {
         key: String(this.values[0]),
@@ -207,6 +242,25 @@ class FakeStatement implements D1PreparedStatement {
       }
     }
 
+    if (this.query.includes("FROM user_sync_snapshot_history")) {
+      const hasRevisionFilter = this.query.includes("revision = ?")
+      const hasUserFilter = this.query.includes("WHERE user_id = ?")
+      const limitIndex = hasRevisionFilter ? null : hasUserFilter ? 1 : 0
+      const userId = hasUserFilter ? String(this.values[0]) : null
+      const revision = hasRevisionFilter ? Number(this.values[1]) : null
+      const limit = limitIndex === null ? 1 : Number(this.values[limitIndex] ?? 50)
+      const results = [...this.db.snapshotHistory]
+        .filter((row) => (userId ? row.user_id === userId : true))
+        .filter((row) => (revision ? row.revision === revision : true))
+        .sort((left, right) => right.revision - left.revision || right.created_at.localeCompare(left.created_at))
+        .slice(0, limit) as T[]
+
+      return {
+        success: true,
+        results
+      }
+    }
+
     if (this.query.includes("FROM remote_rules")) {
       return {
         success: true,
@@ -252,6 +306,7 @@ class FakeD1Database implements D1Database {
   readonly rows: StoredLogRow[] = []
   readonly users: StoredUserRow[] = []
   readonly snapshots: StoredSyncSnapshotRow[] = []
+  readonly snapshotHistory: StoredSyncSnapshotHistoryRow[] = []
   readonly remoteRules: StoredRemoteRulesRow[] = []
   readonly analysisReports: StoredAnalysisReportRow[] = []
 
@@ -552,6 +607,8 @@ describe("log-worker", () => {
     })
     expect(env.DB.snapshots[0]?.profile_json).not.toContain("山田")
     expect(env.DB.snapshots[0]?.encryption_version).toBe(1)
+    expect(env.DB.snapshotHistory).toHaveLength(1)
+    expect(env.DB.snapshotHistory[0]?.action).toBe("save")
   })
 
   it("merges disjoint sync changes and rejects overlapping stale changes", async () => {
@@ -639,6 +696,88 @@ describe("log-worker", () => {
     expect(conflictingResponse.status).toBe(409)
   })
 
+  it("lists sync history and restores a previous revision", async () => {
+    const env = createEnv()
+    mockGoogleTokenInfo()
+    const baseSnapshot = {
+      schemaVersion: 1,
+      profile: {
+        familyName: "",
+        givenName: "",
+        fullName: "山田 太郎",
+        email: "taro@example.com",
+        phone: "",
+        organization: "",
+        postalCode: "",
+        prefecture: "",
+        city: "",
+        addressLine1: "",
+        addressLine2: ""
+      },
+      settings: {
+        enabled: true,
+        observeDynamicForms: true,
+        minMatchCount: 1
+      },
+      domainPolicies: {},
+      updatedAt: "2026-05-21T00:00:00.000Z",
+      baseRevision: 0,
+      deviceId: "device-a",
+      changedFields: ["profile"]
+    }
+
+    await worker.fetch(
+      new Request("https://logs.example.com/me/settings", {
+        method: "PUT",
+        headers: googleHeaders,
+        body: JSON.stringify(baseSnapshot)
+      }),
+      env
+    )
+    await worker.fetch(
+      new Request("https://logs.example.com/me/settings", {
+        method: "PUT",
+        headers: googleHeaders,
+        body: JSON.stringify({
+          ...baseSnapshot,
+          profile: {
+            ...baseSnapshot.profile,
+            fullName: "佐藤 花子"
+          },
+          baseRevision: 1,
+          changedFields: ["profile"]
+        })
+      }),
+      env
+    )
+
+    const historyResponse = await worker.fetch(
+      new Request("https://logs.example.com/me/settings/history?limit=10", {
+        headers: googleHeaders
+      }),
+      env
+    )
+    const restoreResponse = await worker.fetch(
+      new Request("https://logs.example.com/me/settings/history", {
+        method: "POST",
+        headers: googleHeaders,
+        body: JSON.stringify({
+          revision: 1
+        })
+      }),
+      env
+    )
+    const historyBody = (await historyResponse.json()) as { history: Array<{ revision: number; action: string }> }
+    const restoreBody = (await restoreResponse.json()) as { snapshot: { profile: { fullName: string }; revision: number } }
+
+    expect(historyResponse.status).toBe(200)
+    expect(historyBody.history.map((row) => row.revision)).toEqual([2, 1])
+    expect(restoreResponse.status).toBe(200)
+    expect(restoreBody.snapshot.profile.fullName).toBe("山田 太郎")
+    expect(restoreBody.snapshot.revision).toBe(3)
+    expect(env.DB.snapshotHistory.at(-1)?.action).toBe("restore")
+  })
+
   it("stores remote rules and returns log analysis reports", async () => {
     const env = createEnv()
     mockGoogleTokenInfo()
@@ -722,5 +861,16 @@ describe("log-worker", () => {
 
     expect(env.DB.analysisReports).toHaveLength(1)
     expect(env.DB.analysisReports[0]?.scope_user_id).toBeNull()
+  })
+
+  it("serves the admin dashboard and protects admin APIs", async () => {
+    const env = createEnv()
+    const dashboardResponse = await worker.fetch(new Request("https://logs.example.com/admin"), env)
+    const unauthorizedResponse = await worker.fetch(new Request("https://logs.example.com/admin/sync-history"), env)
+
+    expect(dashboardResponse.status).toBe(200)
+    expect(dashboardResponse.headers.get("content-type")).toContain("text/html")
+    expect(await dashboardResponse.text()).toContain("Autofill Browser Admin")
+    expect(unauthorizedResponse.status).toBe(401)
   })
 })
