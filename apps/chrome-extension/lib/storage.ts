@@ -26,6 +26,7 @@ const STORAGE_KEYS = {
 } as const
 
 const EVENT_LOG_LIMIT = 1000
+export const DEFAULT_CHROME_CLOUD_LOG_ENDPOINT_URL = "https://autofill-browser-log-worker.y-elucidator.workers.dev/logs"
 
 export type GoogleAuthUser = {
   sub: string
@@ -161,11 +162,15 @@ const normalizeProfile = (profile?: Partial<StoredProfile>, fallbackProfile: Sto
   return hydrateDerivedProfileValues(next)
 }
 
-const normalizeCloudLogSyncSettings = (settings?: Partial<CloudLogSyncSettings>): CloudLogSyncSettings => ({
-  endpointUrl: settings?.endpointUrl?.trim() ?? DEFAULT_AUTOFILL_SETTINGS.cloudLogSync.endpointUrl,
-  bearerToken: settings?.bearerToken?.trim() ?? DEFAULT_AUTOFILL_SETTINGS.cloudLogSync.bearerToken,
-  includeFieldValues: settings?.includeFieldValues ?? DEFAULT_AUTOFILL_SETTINGS.cloudLogSync.includeFieldValues
-})
+const normalizeCloudLogSyncSettings = (settings?: Partial<CloudLogSyncSettings>): CloudLogSyncSettings => {
+  const endpointUrl = settings?.endpointUrl?.trim() || DEFAULT_CHROME_CLOUD_LOG_ENDPOINT_URL
+
+  return {
+    endpointUrl,
+    bearerToken: settings?.bearerToken?.trim() ?? DEFAULT_AUTOFILL_SETTINGS.cloudLogSync.bearerToken,
+    includeFieldValues: settings?.includeFieldValues ?? DEFAULT_AUTOFILL_SETTINGS.cloudLogSync.includeFieldValues
+  }
+}
 
 const normalizeSettings = (settings?: Partial<AutofillSettings>): AutofillSettings => ({
   enabled: settings?.enabled ?? DEFAULT_AUTOFILL_SETTINGS.enabled,

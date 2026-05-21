@@ -35,6 +35,7 @@ describe("PopupApp", () => {
     const fullNameInput = await screen.findByLabelText("氏名")
     expect((fullNameInput as HTMLInputElement).value).toBe("")
     expect(screen.getByText("まずプロフィールを登録")).toBeTruthy()
+    expect(screen.getByText("Worker設定済み")).toBeTruthy()
   })
 
   it("saves profile updates and shows the regular view", async () => {
@@ -97,7 +98,7 @@ describe("PopupApp", () => {
     })
   })
 
-  it("saves cloud log settings and redacts the bearer token from event details", async () => {
+  it("saves advanced cloud log settings and redacts the shared token from event details", async () => {
     const mock = createChromeMock(
       {
         autofillProfile: {
@@ -115,8 +116,10 @@ describe("PopupApp", () => {
     render(createElement(PopupApp))
 
     const user = userEvent.setup()
-    await user.type(await screen.findByLabelText("Endpoint URL"), "https://logs.example.com/autofill")
-    await user.type(screen.getByLabelText("Bearer token"), "secret-token")
+    await user.click(await screen.findByText("詳細設定"))
+    await user.clear(screen.getByLabelText("Worker URL"))
+    await user.type(screen.getByLabelText("Worker URL"), "https://logs.example.com/autofill")
+    await user.type(screen.getByLabelText("共有トークン（旧方式）"), "secret-token")
     await user.click(screen.getByRole("button", { name: "クラウドログ設定を保存" }))
 
     await waitFor(() => {

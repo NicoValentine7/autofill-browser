@@ -171,7 +171,7 @@ function PopupApp() {
   const saveDraftCloudLogSettings = async () => {
     const endpointUrl = cloudLogSyncForm.endpointUrl.trim()
     if (endpointUrl && !endpointUrl.startsWith("https://")) {
-      setStatus("クラウド保存は https の endpoint が必要やで")
+      setStatus("クラウド保存は https のWorker URLが必要やで")
       return null
     }
 
@@ -312,7 +312,7 @@ function PopupApp() {
     }
 
     if (!snapshotWithEndpoint.settings.cloudLogSync.endpointUrl.trim()) {
-      setStatus("GoogleログインにはWorkerのEndpoint URLが必要やで")
+      setStatus("GoogleログインにはWorker URLが必要やで")
       return
     }
 
@@ -344,7 +344,7 @@ function PopupApp() {
   const handlePushSync = async () => {
     const snapshotWithEndpoint = await saveDraftCloudLogSettings()
     if (!snapshotWithEndpoint?.settings.cloudLogSync.endpointUrl.trim()) {
-      setStatus("同期にはWorkerのEndpoint URLが必要やで")
+      setStatus("同期にはWorker URLが必要やで")
       return
     }
 
@@ -375,7 +375,7 @@ function PopupApp() {
   const handlePullSync = async () => {
     const snapshotWithEndpoint = await saveDraftCloudLogSettings()
     if (!snapshotWithEndpoint?.settings.cloudLogSync.endpointUrl.trim()) {
-      setStatus("復元にはWorkerのEndpoint URLが必要やで")
+      setStatus("復元にはWorker URLが必要やで")
       return
     }
 
@@ -486,20 +486,6 @@ function PopupApp() {
             最終同期: {new Date(snapshot.accountSync.lastRemoteUpdatedAt).toLocaleString("ja-JP")}
           </p>
         ) : null}
-        <label style={{ display: "grid", gap: 4, fontSize: 12, marginBottom: 8 }}>
-          <span>Endpoint URL</span>
-          <input
-            type="url"
-            value={cloudLogSyncForm.endpointUrl}
-            onChange={(event) => {
-              handleCloudLogSyncChange({
-                endpointUrl: event.target.value
-              })
-            }}
-            placeholder="https://example.com/autofill-logs"
-            style={inputStyle}
-          />
-        </label>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
           <button
             type="button"
@@ -577,6 +563,20 @@ function PopupApp() {
       <details style={sectionStyle}>
         <summary style={{ cursor: "pointer", fontSize: 14, fontWeight: 700 }}>詳細設定</summary>
         <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+          <label style={{ display: "grid", gap: 4, fontSize: 12 }}>
+            <span>Worker URL</span>
+            <input
+              type="url"
+              value={cloudLogSyncForm.endpointUrl}
+              onChange={(event) => {
+                handleCloudLogSyncChange({
+                  endpointUrl: event.target.value
+                })
+              }}
+              placeholder="空なら標準の保存先を使う"
+              style={inputStyle}
+            />
+          </label>
           <label style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
             <span>動的フォームも監視</span>
             <input
@@ -604,7 +604,7 @@ function PopupApp() {
             />
           </label>
           <label style={{ display: "grid", gap: 4, fontSize: 12 }}>
-            <span>Bearer token</span>
+            <span>共有トークン（旧方式）</span>
             <input
               type="password"
               value={cloudLogSyncForm.bearerToken}
@@ -613,7 +613,7 @@ function PopupApp() {
                   bearerToken: event.target.value
                 })
               }}
-              placeholder="旧Bearer方式だけで使う"
+              placeholder="旧共有トークン方式だけで使う"
               style={inputStyle}
             />
           </label>

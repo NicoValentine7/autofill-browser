@@ -78,7 +78,7 @@ describe("cloud-log-sync", () => {
     })
   })
 
-  it("does not send logs when the endpoint is blank or not HTTPS", async () => {
+  it("does not send logs when the endpoint is blank, not HTTPS, or auth is missing", async () => {
     const requests: Array<RequestInfo | URL> = []
     const fetchImpl = (async (input) => {
       requests.push(input)
@@ -101,9 +101,18 @@ describe("cloud-log-sync", () => {
       },
       fetchImpl
     )
+    const missingAuthResult = await sendEventLogEntriesToCloud(
+      [event],
+      {
+        ...baseSettings,
+        bearerToken: ""
+      },
+      fetchImpl
+    )
 
     expect(blankEndpointResult).toBe(false)
     expect(insecureResult).toBe(false)
+    expect(missingAuthResult).toBe(false)
     expect(requests).toHaveLength(0)
   })
 })

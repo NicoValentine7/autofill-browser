@@ -65,6 +65,10 @@ export const sendEventLogEntriesToCloud = async (
   }
   const bearerToken = googleAccessToken?.trim() || settings.bearerToken.trim()
 
+  if (!bearerToken) {
+    return false
+  }
+
   if (bearerToken) {
     headers.authorization = `Bearer ${bearerToken}`
   }

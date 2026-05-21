@@ -56,7 +56,7 @@ Plasmo のビルド出力は `build/chrome-mv3-dev/` または `build/chrome-mv3
 
 現在の Chrome 拡張は、`packages/autofill-core` のルールを読んで手動トリガーでフォーム入力を試す最小構成です。
 
-popup の「クラウドログ」から Cloudflare Worker の `https://.../logs` と Bearer token を設定すると、ローカル履歴に加えてイベントログをCloudflare D1へPOSTできます。endpoint未設定時はローカル履歴だけに保存します。
+Chrome拡張は標準でこのリポジトリの Cloudflare Worker に接続するため、通常は保存先URLの入力は不要です。Googleログインすると、ローカル履歴に加えてイベントログと設定snapshotをCloudflare D1へ保存できます。旧方式の共有トークンや別Workerを使う場合だけ、popupの「詳細設定」から変更してください。
 
 #### 拡張IDを固定する
 
@@ -87,11 +87,11 @@ pnpm build:extension
 
 Chrome の拡張機能管理画面で「デベロッパーモード」をONにし、「パッケージ化されていない拡張機能を読み込む」から `apps/chrome-extension/build/chrome-mv3-prod/` を選んでください。
 
-固定される拡張IDは `cjdfbkbfiengbkpejnjecgdgagipjkdk` です。Cloudflare Worker の Endpoint URL は Chrome のローカルストレージに保存されるため、別PCではpopupから設定してください。Googleログイン後に「クラウドから復元」を押すと、プロフィール、自動入力設定、ドメイン制御を復元できます。
+固定される拡張IDは `cjdfbkbfiengbkpejnjecgdgagipjkdk` です。標準のCloudflare Worker URLは拡張側に入っているため、別PCで最初に必要なのは基本的にGoogleログインだけです。ログイン後に「クラウドから復元」を押すと、プロフィール、自動入力設定、ドメイン制御を復元できます。
 
 #### Googleログインと設定同期
 
-Googleログインを使うと、プロフィール、自動入力設定、ドメイン制御をGoogleアカウント単位でCloudflare D1へ保存できます。v1では同期データはD1に平文保存します。`cloudLogSync.bearerToken` と Worker Endpoint URL は同期しません。
+Googleログインを使うと、プロフィール、自動入力設定、ドメイン制御をGoogleアカウント単位でCloudflare D1へ保存できます。v1では同期データはD1に平文保存します。旧方式の共有トークンとWorker URLは同期しません。
 
 Google OAuth client は Google Cloud Console で1回作成します。Application type は `Chrome extension`、Item ID は固定拡張IDの `cjdfbkbfiengbkpejnjecgdgagipjkdk` を指定してください。
 
@@ -109,7 +109,7 @@ pnpm --dir apps/log-worker migrate:remote
 pnpm deploy:log-worker
 ```
 
-popupのEndpoint URLにはWorkerの `/logs` URLを入れてください。Googleログイン時は、同じWorkerから `/auth/me` と `/sync/settings` も使います。Googleログイン済みのログ送信はGoogle tokenで認証し、未ログイン時だけ従来の共有Bearer tokenを使います。
+標準のWorker URLは `apps/chrome-extension/lib/storage.ts` に入っています。別Workerを使う場合だけ、popupの「詳細設定」からWorker URLを上書きしてください。Googleログイン時は、同じWorkerから `/auth/me` と `/sync/settings` も使います。Googleログイン済みのログ送信はGoogle tokenで認証し、未ログイン時だけ従来の共有トークンを使います。
 
 ### CloudflareログAPI
 
@@ -129,7 +129,7 @@ pnpm --dir apps/log-worker migrate:local
 pnpm dev:log-worker
 ```
 
-ログ受け口は `POST /logs`、最近のログ確認は `GET /logs?limit=50` です。設定同期は `GET /sync/settings` と `PUT /sync/settings`、ログイン確認は `GET /auth/me` です。いずれも `Authorization: Bearer <token>` が必要で、tokenには共有Bearer tokenまたはGoogle access tokenを使います。
+ログ受け口は `POST /logs`、最近のログ確認は `GET /logs?limit=50` です。設定同期は `GET /sync/settings` と `PUT /sync/settings`、ログイン確認は `GET /auth/me` です。いずれも `Authorization` ヘッダーが必要で、値には共有トークンまたはGoogle access tokenを使います。
 
 ### テストサイト
 
