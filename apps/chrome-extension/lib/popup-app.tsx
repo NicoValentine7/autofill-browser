@@ -31,6 +31,23 @@ const sectionStyle = {
   background: "#172030"
 } satisfies CSSProperties
 
+const inputStyle = {
+  borderRadius: 8,
+  border: "1px solid #334155",
+  padding: "8px 10px",
+  background: "#0f172a",
+  color: "#f8fafc"
+} satisfies CSSProperties
+
+const buttonStyle = {
+  border: 0,
+  borderRadius: 10,
+  padding: "10px 12px",
+  fontWeight: 600,
+  color: "#10131a",
+  cursor: "pointer"
+} satisfies CSSProperties
+
 const fieldLabels: Array<{ key: keyof StoredProfile; label: string; placeholder: string }> = [
   { key: "familyName", label: "姓", placeholder: "例: 山田" },
   { key: "givenName", label: "名", placeholder: "例: 太郎" },
@@ -44,6 +61,9 @@ const fieldLabels: Array<{ key: keyof StoredProfile; label: string; placeholder:
   { key: "addressLine1", label: "住所1", placeholder: "例: 渋谷区神宮前1-2-3" },
   { key: "addressLine2", label: "住所2", placeholder: "例: テストビル 301" }
 ]
+
+const primaryProfileFields = fieldLabels.filter((field) => ["fullName", "email", "phone"].includes(field.key))
+const optionalProfileFields = fieldLabels.filter((field) => !["fullName", "email", "phone"].includes(field.key))
 
 const eventTypeLabels: Record<EventLogEntry["type"], string> = {
   autofill_run: "自動入力実行",
@@ -139,6 +159,7 @@ function PopupApp() {
   }
 
   const profileReady = isProfileConfigured(snapshot.profile)
+  const endpointConfigured = cloudLogSyncForm.endpointUrl.trim().length > 0
 
   const handleProfileFieldChange = (key: keyof StoredProfile, value: string) => {
     setProfileForm((current) => ({
@@ -396,43 +417,59 @@ function PopupApp() {
         <p style={{ margin: 0, fontSize: 12, lineHeight: 1.5, color: "#c7d0dd" }}>
           1項目マッチでも攻めて自動入力する v1 やで。誤差は履歴と学習メモに貯める想定や。
         </p>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+          <span style={{ borderRadius: 999, padding: "4px 8px", background: profileReady ? "#134e4a" : "#4c1d95", fontSize: 11 }}>
+            {profileReady ? "プロフィールあり" : "プロフィール未設定"}
+          </span>
+          <span style={{ borderRadius: 999, padding: "4px 8px", background: snapshot.googleAuthUser ? "#14532d" : "#713f12", fontSize: 11 }}>
+            {snapshot.googleAuthUser ? "Google同期ON" : "Google未ログイン"}
+          </span>
+          <span style={{ borderRadius: 999, padding: "4px 8px", background: endpointConfigured ? "#1e3a8a" : "#7f1d1d", fontSize: 11 }}>
+            {endpointConfigured ? "Worker設定済み" : "Worker未設定"}
+          </span>
+        </div>
         <p style={{ margin: "8px 0 0", fontSize: 12, color: "#99f6e4" }}>{status}</p>
       </section>
 
       <section style={sectionStyle}>
         <h2 style={{ margin: "0 0 8px", fontSize: 14 }}>
-          {profileReady ? "プロフィール編集" : "まずプロフィールを登録"}
+          {profileReady ? "プロフィール" : "まずプロフィールを登録"}
         </h2>
         <div style={{ display: "grid", gap: 8 }}>
-          {fieldLabels.map((field) => (
+          {primaryProfileFields.map((field) => (
             <label key={field.key} style={{ display: "grid", gap: 4, fontSize: 12 }}>
               <span>{field.label}</span>
               <input
                 value={profileForm[field.key]}
                 onChange={(event) => handleProfileFieldChange(field.key, event.target.value)}
                 placeholder={field.placeholder}
-                style={{
-                  borderRadius: 8,
-                  border: "1px solid #334155",
-                  padding: "8px 10px",
-                  background: "#0f172a",
-                  color: "#f8fafc"
-                }}
+                style={inputStyle}
               />
             </label>
           ))}
+          <details>
+            <summary style={{ cursor: "pointer", fontSize: 12, color: "#c7d0dd" }}>住所・会社など任意項目</summary>
+            <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
+              {optionalProfileFields.map((field) => (
+                <label key={field.key} style={{ display: "grid", gap: 4, fontSize: 12 }}>
+                  <span>{field.label}</span>
+                  <input
+                    value={profileForm[field.key]}
+                    onChange={(event) => handleProfileFieldChange(field.key, event.target.value)}
+                    placeholder={field.placeholder}
+                    style={inputStyle}
+                  />
+                </label>
+              ))}
+            </div>
+          </details>
           <button
             type="button"
             onClick={handleSaveProfile}
             style={{
               marginTop: 4,
-              border: 0,
-              borderRadius: 10,
-              padding: "10px 12px",
-              fontWeight: 600,
-              color: "#10131a",
+              ...buttonStyle,
               background: "#99f6e4",
-              cursor: "pointer"
             }}>
             プロフィールを保存
           </button>
@@ -440,7 +477,64 @@ function PopupApp() {
       </section>
 
       <section style={sectionStyle}>
-        <h2 style={{ margin: "0 0 8px", fontSize: 14 }}>自動入力の設定</h2>
+        <h2 style={{ margin: "0 0 8px", fontSize: 14 }}>Google同期</h2>
+        <p style={{ margin: "0 0 8px", fontSize: 12, color: "#c7d0dd" }}>
+          {snapshot.googleAuthUser ? `${snapshot.googleAuthUser.email} でログイン中` : "ログインすると別PCへプロフィールと設定を復元できるで"}
+        </p>
+        {snapshot.accountSync.lastRemoteUpdatedAt ? (
+          <p style={{ margin: "0 0 8px", fontSize: 12, color: "#94a3b8" }}>
+            最終同期: {new Date(snapshot.accountSync.lastRemoteUpdatedAt).toLocaleString("ja-JP")}
+          </p>
+        ) : null}
+        <label style={{ display: "grid", gap: 4, fontSize: 12, marginBottom: 8 }}>
+          <span>Endpoint URL</span>
+          <input
+            type="url"
+            value={cloudLogSyncForm.endpointUrl}
+            onChange={(event) => {
+              handleCloudLogSyncChange({
+                endpointUrl: event.target.value
+              })
+            }}
+            placeholder="https://example.com/autofill-logs"
+            style={inputStyle}
+          />
+        </label>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          <button
+            type="button"
+            onClick={snapshot.googleAuthUser ? handleGoogleLogout : handleGoogleLogin}
+            style={{
+              ...buttonStyle,
+              background: snapshot.googleAuthUser ? "#fecaca" : "#bbf7d0",
+            }}>
+            {snapshot.googleAuthUser ? "ログアウト" : "Googleでログイン"}
+          </button>
+          <button
+            type="button"
+            onClick={handlePushSync}
+            style={{
+              ...buttonStyle,
+              background: "#c4b5fd",
+            }}>
+            クラウドへ保存
+          </button>
+          <button
+            type="button"
+            onClick={handlePullSync}
+            style={{
+              ...buttonStyle,
+              background: "#fbcfe8",
+              gridColumn: "1 / -1"
+            }}>
+            クラウドから復元
+          </button>
+        </div>
+      </section>
+
+      <section style={sectionStyle}>
+        <h2 style={{ margin: "0 0 8px", fontSize: 14 }}>このサイト</h2>
+        <p style={{ margin: "0 0 8px", fontSize: 12, color: "#c7d0dd" }}>{activeTab.hostname || "判定できへん"}</p>
         <label style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 8 }}>
           <span>自動入力を有効化</span>
           <input
@@ -453,172 +547,6 @@ function PopupApp() {
             }}
           />
         </label>
-        <label style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 8 }}>
-          <span>動的フォームも監視</span>
-          <input
-            type="checkbox"
-            checked={snapshot.settings.observeDynamicForms}
-            onChange={(event) => {
-              void handleSettingsChange({
-                observeDynamicForms: event.target.checked
-              })
-            }}
-          />
-        </label>
-        <label style={{ display: "grid", gap: 4, fontSize: 12 }}>
-          <span>最小マッチ数</span>
-          <input
-            type="number"
-            min={1}
-            value={snapshot.settings.minMatchCount}
-            onChange={(event) => {
-              void handleSettingsChange({
-                minMatchCount: Math.max(1, Number(event.target.value) || 1)
-              })
-            }}
-            style={{
-              borderRadius: 8,
-              border: "1px solid #334155",
-              padding: "8px 10px",
-              background: "#0f172a",
-              color: "#f8fafc"
-            }}
-          />
-        </label>
-      </section>
-
-      <section style={sectionStyle}>
-        <h2 style={{ margin: "0 0 8px", fontSize: 14 }}>クラウドログ</h2>
-        <label style={{ display: "grid", gap: 4, fontSize: 12, marginBottom: 8 }}>
-          <span>Endpoint URL</span>
-          <input
-            type="url"
-            value={cloudLogSyncForm.endpointUrl}
-            onChange={(event) => {
-              handleCloudLogSyncChange({
-                endpointUrl: event.target.value
-              })
-            }}
-            placeholder="https://example.com/autofill-logs"
-            style={{
-              borderRadius: 8,
-              border: "1px solid #334155",
-              padding: "8px 10px",
-              background: "#0f172a",
-              color: "#f8fafc"
-            }}
-          />
-        </label>
-        <label style={{ display: "grid", gap: 4, fontSize: 12, marginBottom: 8 }}>
-          <span>Bearer token</span>
-          <input
-            type="password"
-            value={cloudLogSyncForm.bearerToken}
-            onChange={(event) => {
-              handleCloudLogSyncChange({
-                bearerToken: event.target.value
-              })
-            }}
-            placeholder="optional"
-            style={{
-              borderRadius: 8,
-              border: "1px solid #334155",
-              padding: "8px 10px",
-              background: "#0f172a",
-              color: "#f8fafc"
-            }}
-          />
-        </label>
-        <label style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 8 }}>
-          <span>入力値も送信</span>
-          <input
-            type="checkbox"
-            checked={cloudLogSyncForm.includeFieldValues}
-            onChange={(event) => {
-              handleCloudLogSyncChange({
-                includeFieldValues: event.target.checked
-              })
-            }}
-          />
-        </label>
-        <button
-          type="button"
-          onClick={handleCloudLogSyncSave}
-          style={{
-            marginTop: 4,
-            width: "100%",
-            border: 0,
-            borderRadius: 10,
-            padding: "10px 12px",
-            fontWeight: 600,
-            color: "#10131a",
-            background: "#bae6fd",
-            cursor: "pointer"
-          }}>
-          クラウドログ設定を保存
-        </button>
-      </section>
-
-      <section style={sectionStyle}>
-        <h2 style={{ margin: "0 0 8px", fontSize: 14 }}>Googleアカウント</h2>
-        <p style={{ margin: "0 0 8px", fontSize: 12, color: "#c7d0dd" }}>
-          {snapshot.googleAuthUser ? `${snapshot.googleAuthUser.email} でログイン中` : "未ログイン"}
-        </p>
-        {snapshot.accountSync.lastRemoteUpdatedAt ? (
-          <p style={{ margin: "0 0 8px", fontSize: 12, color: "#94a3b8" }}>
-            最終同期: {new Date(snapshot.accountSync.lastRemoteUpdatedAt).toLocaleString("ja-JP")}
-          </p>
-        ) : null}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-          <button
-            type="button"
-            onClick={snapshot.googleAuthUser ? handleGoogleLogout : handleGoogleLogin}
-            style={{
-              border: 0,
-              borderRadius: 10,
-              padding: "10px 12px",
-              fontWeight: 600,
-              color: "#10131a",
-              background: snapshot.googleAuthUser ? "#fecaca" : "#bbf7d0",
-              cursor: "pointer"
-            }}>
-            {snapshot.googleAuthUser ? "ログアウト" : "Googleでログイン"}
-          </button>
-          <button
-            type="button"
-            onClick={handlePushSync}
-            style={{
-              border: 0,
-              borderRadius: 10,
-              padding: "10px 12px",
-              fontWeight: 600,
-              color: "#10131a",
-              background: "#c4b5fd",
-              cursor: "pointer"
-            }}>
-            クラウドへ保存
-          </button>
-          <button
-            type="button"
-            onClick={handlePullSync}
-            style={{
-              border: 0,
-              borderRadius: 10,
-              padding: "10px 12px",
-              fontWeight: 600,
-              color: "#10131a",
-              background: "#fbcfe8",
-              cursor: "pointer",
-              gridColumn: "1 / -1"
-            }}>
-            クラウドから復元
-          </button>
-        </div>
-      </section>
-
-      <section style={sectionStyle}>
-        <h2 style={{ margin: "0 0 8px", fontSize: 14 }}>現在ドメイン</h2>
-        <p style={{ margin: "0 0 8px", fontSize: 12, color: "#c7d0dd" }}>{activeTab.hostname || "判定できへん"}</p>
         <label style={{ display: "grid", gap: 4, fontSize: 12 }}>
           <span>ドメイン制御</span>
           <select
@@ -627,16 +555,10 @@ function PopupApp() {
               void handlePolicyChange(event.target.value as DomainPolicy)
             }}
             disabled={!activeTab.hostname}
-            style={{
-              borderRadius: 8,
-              border: "1px solid #334155",
-              padding: "8px 10px",
-              background: "#0f172a",
-              color: "#f8fafc"
-            }}>
-            <option value="default">default</option>
-            <option value="whitelist">whitelist</option>
-            <option value="blacklist">blacklist</option>
+            style={inputStyle}>
+            <option value="default">標準</option>
+            <option value="whitelist">常に使う</option>
+            <option value="blacklist">このサイトは使わない</option>
           </select>
         </label>
         <button
@@ -645,20 +567,83 @@ function PopupApp() {
           style={{
             marginTop: 8,
             width: "100%",
-            border: 0,
-            borderRadius: 10,
-            padding: "10px 12px",
-            fontWeight: 600,
-            color: "#10131a",
+            ...buttonStyle,
             background: "#fde68a",
-            cursor: "pointer"
           }}>
           このページで再実行
         </button>
       </section>
 
-      <section style={sectionStyle}>
-        <h2 style={{ margin: "0 0 8px", fontSize: 14 }}>最近の履歴</h2>
+      <details style={sectionStyle}>
+        <summary style={{ cursor: "pointer", fontSize: 14, fontWeight: 700 }}>詳細設定</summary>
+        <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+          <label style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+            <span>動的フォームも監視</span>
+            <input
+              type="checkbox"
+              checked={snapshot.settings.observeDynamicForms}
+              onChange={(event) => {
+                void handleSettingsChange({
+                  observeDynamicForms: event.target.checked
+                })
+              }}
+            />
+          </label>
+          <label style={{ display: "grid", gap: 4, fontSize: 12 }}>
+            <span>最小マッチ数</span>
+            <input
+              type="number"
+              min={1}
+              value={snapshot.settings.minMatchCount}
+              onChange={(event) => {
+                void handleSettingsChange({
+                  minMatchCount: Math.max(1, Number(event.target.value) || 1)
+                })
+              }}
+              style={inputStyle}
+            />
+          </label>
+          <label style={{ display: "grid", gap: 4, fontSize: 12 }}>
+            <span>Bearer token</span>
+            <input
+              type="password"
+              value={cloudLogSyncForm.bearerToken}
+              onChange={(event) => {
+                handleCloudLogSyncChange({
+                  bearerToken: event.target.value
+                })
+              }}
+              placeholder="旧Bearer方式だけで使う"
+              style={inputStyle}
+            />
+          </label>
+          <label style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+            <span>入力値も送信</span>
+            <input
+              type="checkbox"
+              checked={cloudLogSyncForm.includeFieldValues}
+              onChange={(event) => {
+                handleCloudLogSyncChange({
+                  includeFieldValues: event.target.checked
+                })
+              }}
+            />
+          </label>
+          <button
+            type="button"
+            onClick={handleCloudLogSyncSave}
+            style={{
+              width: "100%",
+              ...buttonStyle,
+              background: "#bae6fd"
+            }}>
+            クラウドログ設定を保存
+          </button>
+        </div>
+      </details>
+
+      <details style={sectionStyle} open={snapshot.eventLog.length > 0}>
+        <summary style={{ cursor: "pointer", fontSize: 14, fontWeight: 700 }}>最近の履歴</summary>
         <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 6 }}>
           {snapshot.eventLog.slice(0, 20).map((event) => (
             <li key={event.id} style={{ fontSize: 12, lineHeight: 1.4, color: "#c7d0dd" }}>
@@ -669,7 +654,7 @@ function PopupApp() {
             <li style={{ fontSize: 12, color: "#94a3b8" }}>まだ履歴はないで</li>
           ) : null}
         </ul>
-      </section>
+      </details>
     </main>
   )
 }
