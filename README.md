@@ -87,11 +87,33 @@ pnpm build:extension
 
 Chrome の拡張機能管理画面で「デベロッパーモード」をONにし、「パッケージ化されていない拡張機能を読み込む」から `apps/chrome-extension/build/chrome-mv3-prod/` を選んでください。
 
-固定される拡張IDは `cjdfbkbfiengbkpejnjecgdgagipjkdk` です。プロフィール、Cloudflare Worker の Endpoint URL、Bearer token は Chrome のローカルストレージに保存されるため、別PCではpopupから再設定してください。
+固定される拡張IDは `cjdfbkbfiengbkpejnjecgdgagipjkdk` です。Cloudflare Worker の Endpoint URL は Chrome のローカルストレージに保存されるため、別PCではpopupから設定してください。Googleログイン後に「クラウドから復元」を押すと、プロフィール、自動入力設定、ドメイン制御を復元できます。
+
+#### Googleログインと設定同期
+
+Googleログインを使うと、プロフィール、自動入力設定、ドメイン制御をGoogleアカウント単位でCloudflare D1へ保存できます。v1では同期データはD1に平文保存します。`cloudLogSync.bearerToken` と Worker Endpoint URL は同期しません。
+
+Google OAuth client は Google Cloud Console で1回作成します。Application type は `Chrome extension`、Item ID は固定拡張IDの `cjdfbkbfiengbkpejnjecgdgagipjkdk` を指定してください。
+
+client ID を作成したら、repo内のmanifestとWorker設定へ反映します。
+
+```bash
+pnpm set:google-oauth-client <client-id.apps.googleusercontent.com>
+```
+
+その後、拡張とWorkerをbuild/deployします。
+
+```bash
+pnpm build:extension
+pnpm --dir apps/log-worker migrate:remote
+pnpm deploy:log-worker
+```
+
+popupのEndpoint URLにはWorkerの `/logs` URLを入れてください。Googleログイン時は、同じWorkerから `/auth/me` と `/sync/settings` も使います。Googleログイン済みのログ送信はGoogle tokenで認証し、未ログイン時だけ従来の共有Bearer tokenを使います。
 
 ### CloudflareログAPI
 
-Cloudflare側は `apps/log-worker` にあります。D1 databaseを作り、`apps/log-worker/wrangler.jsonc` の `database_id` を差し替えてからmigrationとsecret設定を行ってください。
+Cloudflare側は `apps/log-worker` にあります。D1 databaseを作り、`apps/log-worker/wrangler.jsonc` の `database_id` と `GOOGLE_OAUTH_CLIENT_ID` を差し替えてからmigrationとsecret設定を行ってください。
 
 ```bash
 npx wrangler d1 create autofill-browser-logs
@@ -107,7 +129,7 @@ pnpm --dir apps/log-worker migrate:local
 pnpm dev:log-worker
 ```
 
-ログ受け口は `POST /logs`、最近のログ確認は `GET /logs?limit=50` です。どちらも `Authorization: Bearer <token>` が必要です。
+ログ受け口は `POST /logs`、最近のログ確認は `GET /logs?limit=50` です。設定同期は `GET /sync/settings` と `PUT /sync/settings`、ログイン確認は `GET /auth/me` です。いずれも `Authorization: Bearer <token>` が必要で、tokenには共有Bearer tokenまたはGoogle access tokenを使います。
 
 ### テストサイト
 

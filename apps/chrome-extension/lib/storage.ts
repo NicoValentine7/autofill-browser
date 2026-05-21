@@ -20,10 +20,26 @@ const STORAGE_KEYS = {
   settings: "autofillSettings",
   domainPolicies: "autofillDomainPolicies",
   fieldMemory: "autofillFieldMemory",
-  eventLog: "autofillEventLog"
+  eventLog: "autofillEventLog",
+  googleAuthUser: "autofillGoogleAuthUser",
+  accountSync: "autofillAccountSync"
 } as const
 
 const EVENT_LOG_LIMIT = 1000
+
+export type GoogleAuthUser = {
+  sub: string
+  email: string
+  name?: string
+  picture?: string
+  signedInAt: string
+}
+
+export type AccountSyncState = {
+  lastPulledAt?: string
+  lastPushedAt?: string
+  lastRemoteUpdatedAt?: string
+}
 
 export type StorageSnapshot = {
   profile: StoredProfile
@@ -31,6 +47,8 @@ export type StorageSnapshot = {
   domainPolicies: Record<string, DomainPolicy>
   fieldMemory: Record<string, FieldMemoryEntry>
   eventLog: EventLogEntry[]
+  googleAuthUser?: GoogleAuthUser
+  accountSync: AccountSyncState
 }
 
 export type EventContext = {
@@ -46,6 +64,8 @@ type StorageUpdate = {
   domainPolicies?: Record<string, DomainPolicy>
   fieldMemoryUpdates?: FieldMemoryEntry[]
   eventEntries?: NewEventLogEntry[]
+  googleAuthUser?: GoogleAuthUser | null
+  accountSync?: AccountSyncState
 }
 
 const createEventId = () =>
@@ -157,6 +177,29 @@ const normalizeSettings = (settings?: Partial<AutofillSettings>): AutofillSettin
   cloudLogSync: normalizeCloudLogSyncSettings(settings?.cloudLogSync)
 })
 
+const normalizeGoogleAuthUser = (user?: Partial<GoogleAuthUser> | null): GoogleAuthUser | undefined => {
+  const sub = user?.sub?.trim()
+  const email = user?.email?.trim()
+
+  if (!sub || !email) {
+    return undefined
+  }
+
+  return {
+    sub,
+    email,
+    name: user?.name?.trim() || undefined,
+    picture: user?.picture?.trim() || undefined,
+    signedInAt: user?.signedInAt?.trim() || new Date().toISOString()
+  }
+}
+
+const normalizeAccountSyncState = (state?: Partial<AccountSyncState>): AccountSyncState => ({
+  lastPulledAt: state?.lastPulledAt?.trim() || undefined,
+  lastPushedAt: state?.lastPushedAt?.trim() || undefined,
+  lastRemoteUpdatedAt: state?.lastRemoteUpdatedAt?.trim() || undefined
+})
+
 const redactSettingsPatch = (settings: Partial<AutofillSettings>) => {
   const redactedSettings: Partial<AutofillSettings> = {
     ...settings
@@ -199,18 +242,23 @@ export const getStorageSnapshot = async (): Promise<StorageSnapshot> => {
     settings: normalizeSettings(stored[STORAGE_KEYS.settings] as Partial<AutofillSettings> | undefined),
     domainPolicies: (stored[STORAGE_KEYS.domainPolicies] as Record<string, DomainPolicy> | undefined) ?? {},
     fieldMemory: (stored[STORAGE_KEYS.fieldMemory] as Record<string, FieldMemoryEntry> | undefined) ?? {},
-    eventLog: sortAndTrimEvents((stored[STORAGE_KEYS.eventLog] as EventLogEntry[] | undefined) ?? [])
+    eventLog: sortAndTrimEvents((stored[STORAGE_KEYS.eventLog] as EventLogEntry[] | undefined) ?? []),
+    googleAuthUser: normalizeGoogleAuthUser(stored[STORAGE_KEYS.googleAuthUser] as Partial<GoogleAuthUser> | undefined),
+    accountSync: normalizeAccountSyncState(stored[STORAGE_KEYS.accountSync] as Partial<AccountSyncState> | undefined)
   }
 }
 
 export const commitStorageChanges = async (update: StorageUpdate): Promise<StorageSnapshot> => {
   const current = await getStorageSnapshot()
+  const hasGoogleAuthUserUpdate = Object.prototype.hasOwnProperty.call(update, "googleAuthUser")
   const next: StorageSnapshot = {
     profile: update.profile ? normalizeProfile(update.profile) : current.profile,
     settings: update.settings ? normalizeSettings({ ...current.settings, ...update.settings }) : current.settings,
     domainPolicies: update.domainPolicies ? { ...update.domainPolicies } : current.domainPolicies,
     fieldMemory: { ...current.fieldMemory },
-    eventLog: current.eventLog
+    eventLog: current.eventLog,
+    googleAuthUser: hasGoogleAuthUserUpdate ? normalizeGoogleAuthUser(update.googleAuthUser) : current.googleAuthUser,
+    accountSync: update.accountSync ? normalizeAccountSyncState({ ...current.accountSync, ...update.accountSync }) : current.accountSync
   }
 
   if (update.fieldMemoryUpdates) {
@@ -231,11 +279,13 @@ export const commitStorageChanges = async (update: StorageUpdate): Promise<Stora
     [STORAGE_KEYS.settings]: next.settings,
     [STORAGE_KEYS.domainPolicies]: next.domainPolicies,
     [STORAGE_KEYS.fieldMemory]: next.fieldMemory,
-    [STORAGE_KEYS.eventLog]: next.eventLog
+    [STORAGE_KEYS.eventLog]: next.eventLog,
+    [STORAGE_KEYS.googleAuthUser]: next.googleAuthUser ?? null,
+    [STORAGE_KEYS.accountSync]: next.accountSync
   })
 
   if (normalizedEventEntries.length > 0) {
-    void sendCloudLogSyncMessage(normalizedEventEntries, next.settings.cloudLogSync)
+    void sendCloudLogSyncMessage(normalizedEventEntries, next.settings.cloudLogSync, Boolean(next.googleAuthUser))
   }
 
   return next
@@ -304,3 +354,41 @@ export const appendEventEntries = async (eventEntries: NewEventLogEntry[]) =>
   commitStorageChanges({
     eventEntries
   })
+
+export const saveGoogleAuthUser = async (googleAuthUser: GoogleAuthUser) =>
+  commitStorageChanges({
+    googleAuthUser
+  })
+
+export const clearGoogleAuthUser = async () =>
+  commitStorageChanges({
+    googleAuthUser: null
+  })
+
+export const saveAccountSyncState = async (accountSync: AccountSyncState) =>
+  commitStorageChanges({
+    accountSync
+  })
+
+export const applySyncedSnapshot = async (
+  syncedSnapshot: Pick<StorageSnapshot, "profile" | "settings" | "domainPolicies">,
+  remoteUpdatedAt?: string
+) => {
+  const current = await getStorageSnapshot()
+  return commitStorageChanges({
+    profile: syncedSnapshot.profile,
+    settings: {
+      ...syncedSnapshot.settings,
+      cloudLogSync: {
+        ...syncedSnapshot.settings.cloudLogSync,
+        endpointUrl: current.settings.cloudLogSync.endpointUrl,
+        bearerToken: current.settings.cloudLogSync.bearerToken
+      }
+    },
+    domainPolicies: syncedSnapshot.domainPolicies,
+    accountSync: {
+      lastPulledAt: new Date().toISOString(),
+      lastRemoteUpdatedAt: remoteUpdatedAt
+    }
+  })
+}

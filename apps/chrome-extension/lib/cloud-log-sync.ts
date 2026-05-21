@@ -51,7 +51,8 @@ export const buildCloudLogPayload = (
 export const sendEventLogEntriesToCloud = async (
   events: EventLogEntry[],
   settings: CloudLogSyncSettings,
-  fetchImpl: FetchLike = fetch
+  fetchImpl: FetchLike = fetch,
+  googleAccessToken?: string | null
 ) => {
   const endpointUrl = settings.endpointUrl.trim()
 
@@ -62,7 +63,7 @@ export const sendEventLogEntriesToCloud = async (
   const headers: Record<string, string> = {
     "content-type": "application/json"
   }
-  const bearerToken = settings.bearerToken.trim()
+  const bearerToken = googleAccessToken?.trim() || settings.bearerToken.trim()
 
   if (bearerToken) {
     headers.authorization = `Bearer ${bearerToken}`

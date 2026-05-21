@@ -2,12 +2,18 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react"
 
 import { createEmptyProfile, getDomainPolicy, isProfileConfigured, type DomainPolicy, type EventLogEntry, type StoredProfile } from "@autofill-browser/autofill-core"
 
+import { fetchSignedInUser, pullSyncedSnapshot, pushSyncedSnapshot } from "./account-sync"
+import { clearGoogleAuthTokens, getGoogleAccessToken } from "./google-auth"
 import type { ExtensionMessage } from "./messages"
 import { sendMessageToTab } from "./messages"
 import {
+  applySyncedSnapshot,
   appendEventEntries,
+  clearGoogleAuthUser,
   getStorageSnapshot,
+  saveAccountSyncState,
   saveDomainPolicy,
+  saveGoogleAuthUser,
   saveProfile,
   saveSettings,
   type StorageSnapshot
@@ -141,37 +147,19 @@ function PopupApp() {
     }))
   }
 
-  const handleSaveProfile = async () => {
-    const nextSnapshot = await saveProfile(profileForm, "popup-ui", {
-      hostname: activeTab.hostname,
-      url: activeTab.url
-    })
-    setSnapshot(nextSnapshot)
-    await notifyActiveTab(activeTab.id, { type: "PROFILE_UPDATED" })
-    setStatus("プロフィールを保存したで")
-  }
-
-  const handleSettingsChange = async (patch: Partial<StorageSnapshot["settings"]>) => {
-    const nextSnapshot = await saveSettings(patch, "popup-ui", {
-      hostname: activeTab.hostname,
-      url: activeTab.url
-    })
-    setSnapshot(nextSnapshot)
-    await notifyActiveTab(activeTab.id, { type: "SETTINGS_UPDATED" })
-    setStatus("設定を更新したで")
-  }
-
-  const handleCloudLogSyncChange = (patch: Partial<StorageSnapshot["settings"]["cloudLogSync"]>) => {
-    setCloudLogSyncForm((current) => ({
-      ...current,
-      ...patch
-    }))
-  }
-
-  const handleCloudLogSyncSave = async () => {
-    if (cloudLogSyncForm.endpointUrl.trim() && !cloudLogSyncForm.endpointUrl.trim().startsWith("https://")) {
+  const saveDraftCloudLogSettings = async () => {
+    const endpointUrl = cloudLogSyncForm.endpointUrl.trim()
+    if (endpointUrl && !endpointUrl.startsWith("https://")) {
       setStatus("クラウド保存は https の endpoint が必要やで")
-      return
+      return null
+    }
+
+    if (
+      endpointUrl === snapshot.settings.cloudLogSync.endpointUrl &&
+      cloudLogSyncForm.bearerToken === snapshot.settings.cloudLogSync.bearerToken &&
+      cloudLogSyncForm.includeFieldValues === snapshot.settings.cloudLogSync.includeFieldValues
+    ) {
+      return snapshot
     }
 
     const nextSnapshot = await saveSettings(
@@ -186,6 +174,75 @@ function PopupApp() {
     )
     setSnapshot(nextSnapshot)
     setCloudLogSyncForm(nextSnapshot.settings.cloudLogSync)
+    return nextSnapshot
+  }
+
+  const pushSnapshotIfSignedIn = async (nextSnapshot: StorageSnapshot) => {
+    if (!nextSnapshot.googleAuthUser || !nextSnapshot.settings.cloudLogSync.endpointUrl.trim()) {
+      return nextSnapshot
+    }
+
+    const googleAccessToken = await getGoogleAccessToken(false)
+    if (!googleAccessToken) {
+      setStatus("ローカル保存したで。Google同期は再ログインが必要やな")
+      return nextSnapshot
+    }
+
+    const remoteUpdatedAt = await pushSyncedSnapshot(
+      nextSnapshot.settings.cloudLogSync.endpointUrl,
+      googleAccessToken,
+      nextSnapshot
+    )
+
+    if (!remoteUpdatedAt) {
+      setStatus("ローカル保存したで。Google同期は失敗したわ")
+      return nextSnapshot
+    }
+
+    const syncedSnapshot = await saveAccountSyncState({
+      lastPushedAt: new Date().toISOString(),
+      lastRemoteUpdatedAt: remoteUpdatedAt
+    })
+    setSnapshot(syncedSnapshot)
+    return syncedSnapshot
+  }
+
+  const handleSaveProfile = async () => {
+    const nextSnapshot = await saveProfile(profileForm, "popup-ui", {
+      hostname: activeTab.hostname,
+      url: activeTab.url
+    })
+    setSnapshot(nextSnapshot)
+    await notifyActiveTab(activeTab.id, { type: "PROFILE_UPDATED" })
+    await pushSnapshotIfSignedIn(nextSnapshot)
+    setStatus("プロフィールを保存したで")
+  }
+
+  const handleSettingsChange = async (patch: Partial<StorageSnapshot["settings"]>) => {
+    const nextSnapshot = await saveSettings(patch, "popup-ui", {
+      hostname: activeTab.hostname,
+      url: activeTab.url
+    })
+    setSnapshot(nextSnapshot)
+    await notifyActiveTab(activeTab.id, { type: "SETTINGS_UPDATED" })
+    await pushSnapshotIfSignedIn(nextSnapshot)
+    setStatus("設定を更新したで")
+  }
+
+  const handleCloudLogSyncChange = (patch: Partial<StorageSnapshot["settings"]["cloudLogSync"]>) => {
+    setCloudLogSyncForm((current) => ({
+      ...current,
+      ...patch
+    }))
+  }
+
+  const handleCloudLogSyncSave = async () => {
+    const nextSnapshot = await saveDraftCloudLogSettings()
+    if (!nextSnapshot) {
+      return
+    }
+
+    await pushSnapshotIfSignedIn(nextSnapshot)
     setStatus("クラウドログ設定を保存したで")
   }
 
@@ -200,6 +257,7 @@ function PopupApp() {
       url: activeTab.url
     })
     setSnapshot(nextSnapshot)
+    await pushSnapshotIfSignedIn(nextSnapshot)
     await notifyActiveTab(activeTab.id, {
       type: "DOMAIN_POLICY_UPDATED",
       hostname: activeTab.hostname
@@ -224,6 +282,101 @@ function PopupApp() {
     const nextSnapshot = await getStorageSnapshot()
     setSnapshot(nextSnapshot)
     setStatus("このページで再実行したで")
+  }
+
+  const handleGoogleLogin = async () => {
+    const snapshotWithEndpoint = await saveDraftCloudLogSettings()
+    if (!snapshotWithEndpoint) {
+      return
+    }
+
+    if (!snapshotWithEndpoint.settings.cloudLogSync.endpointUrl.trim()) {
+      setStatus("GoogleログインにはWorkerのEndpoint URLが必要やで")
+      return
+    }
+
+    const googleAccessToken = await getGoogleAccessToken(true)
+    if (!googleAccessToken) {
+      setStatus("Googleログインがキャンセルされたか失敗したで")
+      return
+    }
+
+    const googleAuthUser = await fetchSignedInUser(snapshotWithEndpoint.settings.cloudLogSync.endpointUrl, googleAccessToken)
+    if (!googleAuthUser) {
+      setStatus("WorkerでGoogleログインを確認できへんかった")
+      return
+    }
+
+    const signedInSnapshot = await saveGoogleAuthUser(googleAuthUser)
+    setSnapshot(signedInSnapshot)
+    await pushSnapshotIfSignedIn(signedInSnapshot)
+    setStatus(`${googleAuthUser.email} でログインしたで`)
+  }
+
+  const handleGoogleLogout = async () => {
+    await clearGoogleAuthTokens()
+    const nextSnapshot = await clearGoogleAuthUser()
+    setSnapshot(nextSnapshot)
+    setStatus("Googleログアウトしたで")
+  }
+
+  const handlePushSync = async () => {
+    const snapshotWithEndpoint = await saveDraftCloudLogSettings()
+    if (!snapshotWithEndpoint?.settings.cloudLogSync.endpointUrl.trim()) {
+      setStatus("同期にはWorkerのEndpoint URLが必要やで")
+      return
+    }
+
+    const googleAccessToken = await getGoogleAccessToken(true)
+    if (!googleAccessToken) {
+      setStatus("Googleログインが必要やで")
+      return
+    }
+
+    const remoteUpdatedAt = await pushSyncedSnapshot(
+      snapshotWithEndpoint.settings.cloudLogSync.endpointUrl,
+      googleAccessToken,
+      snapshotWithEndpoint
+    )
+    if (!remoteUpdatedAt) {
+      setStatus("クラウド保存に失敗したで")
+      return
+    }
+
+    const nextSnapshot = await saveAccountSyncState({
+      lastPushedAt: new Date().toISOString(),
+      lastRemoteUpdatedAt: remoteUpdatedAt
+    })
+    setSnapshot(nextSnapshot)
+    setStatus("設定をクラウドへ保存したで")
+  }
+
+  const handlePullSync = async () => {
+    const snapshotWithEndpoint = await saveDraftCloudLogSettings()
+    if (!snapshotWithEndpoint?.settings.cloudLogSync.endpointUrl.trim()) {
+      setStatus("復元にはWorkerのEndpoint URLが必要やで")
+      return
+    }
+
+    const googleAccessToken = await getGoogleAccessToken(true)
+    if (!googleAccessToken) {
+      setStatus("Googleログインが必要やで")
+      return
+    }
+
+    const remoteSnapshot = await pullSyncedSnapshot(snapshotWithEndpoint.settings.cloudLogSync.endpointUrl, googleAccessToken)
+    if (!remoteSnapshot) {
+      setStatus("復元できるクラウド設定がまだ無いで")
+      return
+    }
+
+    const nextSnapshot = await applySyncedSnapshot(remoteSnapshot, remoteSnapshot.updatedAt)
+    setSnapshot(nextSnapshot)
+    setProfileForm(nextSnapshot.profile)
+    setCloudLogSyncForm(nextSnapshot.settings.cloudLogSync)
+    await notifyActiveTab(activeTab.id, { type: "SETTINGS_UPDATED" })
+    await notifyActiveTab(activeTab.id, { type: "PROFILE_UPDATED" })
+    setStatus("クラウドから設定を復元したで")
   }
 
   return (
@@ -404,6 +557,63 @@ function PopupApp() {
           }}>
           クラウドログ設定を保存
         </button>
+      </section>
+
+      <section style={sectionStyle}>
+        <h2 style={{ margin: "0 0 8px", fontSize: 14 }}>Googleアカウント</h2>
+        <p style={{ margin: "0 0 8px", fontSize: 12, color: "#c7d0dd" }}>
+          {snapshot.googleAuthUser ? `${snapshot.googleAuthUser.email} でログイン中` : "未ログイン"}
+        </p>
+        {snapshot.accountSync.lastRemoteUpdatedAt ? (
+          <p style={{ margin: "0 0 8px", fontSize: 12, color: "#94a3b8" }}>
+            最終同期: {new Date(snapshot.accountSync.lastRemoteUpdatedAt).toLocaleString("ja-JP")}
+          </p>
+        ) : null}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          <button
+            type="button"
+            onClick={snapshot.googleAuthUser ? handleGoogleLogout : handleGoogleLogin}
+            style={{
+              border: 0,
+              borderRadius: 10,
+              padding: "10px 12px",
+              fontWeight: 600,
+              color: "#10131a",
+              background: snapshot.googleAuthUser ? "#fecaca" : "#bbf7d0",
+              cursor: "pointer"
+            }}>
+            {snapshot.googleAuthUser ? "ログアウト" : "Googleでログイン"}
+          </button>
+          <button
+            type="button"
+            onClick={handlePushSync}
+            style={{
+              border: 0,
+              borderRadius: 10,
+              padding: "10px 12px",
+              fontWeight: 600,
+              color: "#10131a",
+              background: "#c4b5fd",
+              cursor: "pointer"
+            }}>
+            クラウドへ保存
+          </button>
+          <button
+            type="button"
+            onClick={handlePullSync}
+            style={{
+              border: 0,
+              borderRadius: 10,
+              padding: "10px 12px",
+              fontWeight: 600,
+              color: "#10131a",
+              background: "#fbcfe8",
+              cursor: "pointer",
+              gridColumn: "1 / -1"
+            }}>
+            クラウドから復元
+          </button>
+        </div>
       </section>
 
       <section style={sectionStyle}>

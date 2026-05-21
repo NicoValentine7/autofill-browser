@@ -34,7 +34,8 @@ const createSnapshot = (): StorageSnapshot => ({
   },
   domainPolicies: {},
   fieldMemory: {},
-  eventLog: []
+  eventLog: [],
+  accountSync: {}
 })
 
 const valueById = (snapshot: StorageSnapshot) =>

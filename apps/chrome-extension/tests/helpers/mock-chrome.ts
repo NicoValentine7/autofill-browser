@@ -9,6 +9,12 @@ export const createChromeMock = (
   activeTab: { id?: number; url?: string } = {
     id: 1,
     url: "https://example.com/form"
+  },
+  identityOptions: {
+    authToken?: string
+    failAuthToken?: boolean
+  } = {
+    authToken: "google-token"
   }
 ) => {
   const storageData: StorageData = { ...initialStorage }
@@ -16,6 +22,8 @@ export const createChromeMock = (
   const storageListeners = new Set<StorageListener>()
   const runtimeMessages: unknown[] = []
   const sentMessages: Array<{ tabId: number; message: unknown }> = []
+  const identityRequests: unknown[] = []
+  let authTokensCleared = false
 
   const chromeMock = {
     runtime: {
@@ -79,6 +87,20 @@ export const createChromeMock = (
       async sendMessage(tabId: number, message: unknown) {
         sentMessages.push({ tabId, message })
       }
+    },
+    identity: {
+      async getAuthToken(details?: unknown) {
+        identityRequests.push(details)
+        if (identityOptions.failAuthToken) {
+          throw new Error("auth failed")
+        }
+        return {
+          token: identityOptions.authToken ?? "google-token"
+        }
+      },
+      async clearAllCachedAuthTokens() {
+        authTokensCleared = true
+      }
     }
   }
 
@@ -87,6 +109,10 @@ export const createChromeMock = (
     storageData,
     runtimeMessages,
     sentMessages,
+    identityRequests,
+    get authTokensCleared() {
+      return authTokensCleared
+    },
     emitRuntimeMessage(message: unknown) {
       for (const listener of runtimeListeners) {
         listener(message)

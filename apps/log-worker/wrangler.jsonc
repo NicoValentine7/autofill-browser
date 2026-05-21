@@ -7,6 +7,9 @@
     "enabled": true,
     "head_sampling_rate": 1
   },
+  "vars": {
+    "GOOGLE_OAUTH_CLIENT_ID": "replace-with-google-oauth-client-id.apps.googleusercontent.com"
+  },
   "d1_databases": [
     {
       "binding": "DB",

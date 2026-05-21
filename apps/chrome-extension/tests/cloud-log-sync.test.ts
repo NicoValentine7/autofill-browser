@@ -63,6 +63,21 @@ describe("cloud-log-sync", () => {
     })
   })
 
+  it("uses a Google access token instead of the shared bearer token when provided", async () => {
+    const requests: Array<{ input: RequestInfo | URL; init?: RequestInit }> = []
+    const fetchImpl = (async (input, init) => {
+      requests.push({ input, init })
+      return new Response(null, { status: 202 })
+    }) satisfies typeof fetch
+
+    const result = await sendEventLogEntriesToCloud([event], baseSettings, fetchImpl, "google-access-token")
+
+    expect(result).toBe(true)
+    expect(requests[0]?.init?.headers).toMatchObject({
+      authorization: "Bearer google-access-token"
+    })
+  })
+
   it("does not send logs when the endpoint is blank or not HTTPS", async () => {
     const requests: Array<RequestInfo | URL> = []
     const fetchImpl = (async (input) => {

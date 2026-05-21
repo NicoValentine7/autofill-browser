@@ -19,6 +19,7 @@ export type D1Database = {
 export type Env = {
   DB: D1Database
   CLOUD_LOG_INGEST_TOKEN: string
+  GOOGLE_OAUTH_CLIENT_ID?: string
 }
 
 type EventLogEntry = {
@@ -45,6 +46,7 @@ type CloudLogPayload = {
 
 export type EventLogRow = {
   id: string
+  user_id: string | null
   timestamp: string
   type: string
   hostname: string
@@ -60,10 +62,74 @@ export type EventLogRow = {
   raw_json: string
 }
 
+type UserRow = {
+  id: string
+  google_sub: string
+  email: string
+  name: string | null
+  picture: string | null
+  created_at: string
+  updated_at: string
+}
+
+type AuthUser = {
+  id: string
+  googleSub: string
+  email: string
+  name?: string
+  picture?: string
+}
+
+type AuthContext =
+  | {
+      type: "shared-token"
+    }
+  | {
+      type: "google"
+      user: AuthUser
+    }
+
+type SyncedSnapshot = {
+  schemaVersion: 1
+  profile: Record<string, string>
+  settings: {
+    enabled: boolean
+    observeDynamicForms: boolean
+    minMatchCount: number
+    cloudLogSync: {
+      endpointUrl: string
+      bearerToken: string
+      includeFieldValues: boolean
+    }
+  }
+  domainPolicies: Record<string, "default" | "whitelist" | "blacklist">
+  updatedAt: string
+}
+
+type SyncSnapshotRow = {
+  user_id: string
+  schema_version: number
+  profile_json: string
+  settings_json: string
+  domain_policies_json: string
+  updated_at: string
+  raw_json: string
+}
+
+type GoogleTokenInfo = {
+  aud?: unknown
+  azp?: unknown
+  sub?: unknown
+  email?: unknown
+  email_verified?: unknown
+  name?: unknown
+  picture?: unknown
+}
+
 const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
   "access-control-allow-origin": "*",
-  "access-control-allow-methods": "GET, POST, OPTIONS",
+  "access-control-allow-methods": "GET, POST, PUT, OPTIONS",
   "access-control-allow-headers": "authorization, content-type"
 }
 
@@ -93,10 +159,13 @@ const constantTimeEqual = (left: ArrayBuffer, right: ArrayBuffer) => {
   return diff === 0
 }
 
-const isAuthorized = async (request: Request, env: Env) => {
-  const expectedToken = env.CLOUD_LOG_INGEST_TOKEN?.trim()
+const getBearerToken = (request: Request) => {
   const authorization = request.headers.get("authorization") ?? ""
-  const actualToken = authorization.match(/^Bearer\s+(.+)$/i)?.[1]?.trim() ?? ""
+  return authorization.match(/^Bearer\s+(.+)$/i)?.[1]?.trim() ?? ""
+}
+
+const isSharedTokenAuthorized = async (actualToken: string, env: Env) => {
+  const expectedToken = env.CLOUD_LOG_INGEST_TOKEN?.trim()
 
   if (!expectedToken || !actualToken) {
     return false
@@ -112,6 +181,20 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const isString = (value: unknown): value is string => typeof value === "string"
 
 const optionalString = (value: unknown) => value === undefined || isString(value)
+
+const requiredProfileKeys = [
+  "familyName",
+  "givenName",
+  "fullName",
+  "email",
+  "phone",
+  "organization",
+  "postalCode",
+  "prefecture",
+  "city",
+  "addressLine1",
+  "addressLine2"
+] as const
 
 const isEventLogEntry = (value: unknown): value is EventLogEntry => {
   if (!isRecord(value)) {
@@ -162,10 +245,118 @@ const parseLogPayload = async (request: Request) => {
   return body
 }
 
-const insertLogEvent = (env: Env, event: EventLogEntry, receivedAt: string) =>
+const toOptionalString = (value: unknown) => (typeof value === "string" && value.trim() ? value.trim() : undefined)
+
+const isVerifiedEmail = (value: unknown) => value === true || value === "true"
+
+const verifyGoogleToken = async (token: string, env: Env): Promise<Omit<AuthUser, "id"> | null> => {
+  const expectedClientId = env.GOOGLE_OAUTH_CLIENT_ID?.trim()
+  if (!token || !expectedClientId) {
+    return null
+  }
+
+  let response: Response
+  try {
+    response = await fetch(`https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(token)}`)
+  } catch (_error) {
+    return null
+  }
+
+  if (!response.ok) {
+    return null
+  }
+
+  const tokenInfo = (await response.json()) as GoogleTokenInfo
+  const aud = toOptionalString(tokenInfo.aud)
+  const azp = toOptionalString(tokenInfo.azp)
+  const googleSub = toOptionalString(tokenInfo.sub)
+  const email = toOptionalString(tokenInfo.email)
+
+  if (!googleSub || !email || !isVerifiedEmail(tokenInfo.email_verified)) {
+    return null
+  }
+
+  if (aud !== expectedClientId && azp !== expectedClientId) {
+    return null
+  }
+
+  return {
+    googleSub,
+    email,
+    name: toOptionalString(tokenInfo.name),
+    picture: toOptionalString(tokenInfo.picture)
+  }
+}
+
+const upsertGoogleUser = async (env: Env, googleUser: Omit<AuthUser, "id">): Promise<AuthUser> => {
+  const now = new Date().toISOString()
+  const existing = await env.DB.prepare(
+    `SELECT id, google_sub, email, name, picture, created_at, updated_at
+     FROM users
+     WHERE google_sub = ?
+     LIMIT 1`
+  )
+    .bind(googleUser.googleSub)
+    .all<UserRow>()
+  const existingUser = existing.results?.[0]
+
+  if (existingUser) {
+    await env.DB.prepare(
+      `UPDATE users
+       SET email = ?, name = ?, picture = ?, updated_at = ?
+       WHERE id = ?`
+    )
+      .bind(googleUser.email, googleUser.name ?? null, googleUser.picture ?? null, now, existingUser.id)
+      .run()
+
+    return {
+      id: existingUser.id,
+      googleSub: existingUser.google_sub,
+      email: googleUser.email,
+      name: googleUser.name,
+      picture: googleUser.picture
+    }
+  }
+
+  const id = crypto.randomUUID()
+  await env.DB.prepare(
+    `INSERT INTO users (id, google_sub, email, name, picture, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  )
+    .bind(id, googleUser.googleSub, googleUser.email, googleUser.name ?? null, googleUser.picture ?? null, now, now)
+    .run()
+
+  return {
+    id,
+    ...googleUser
+  }
+}
+
+const authenticateRequest = async (request: Request, env: Env): Promise<AuthContext | null> => {
+  const token = getBearerToken(request)
+
+  if (await isSharedTokenAuthorized(token, env)) {
+    return {
+      type: "shared-token"
+    }
+  }
+
+  const googleUser = await verifyGoogleToken(token, env)
+  if (!googleUser) {
+    return null
+  }
+
+  return {
+    type: "google",
+    user: await upsertGoogleUser(env, googleUser)
+  }
+}
+
+const insertLogEvent = (env: Env, event: EventLogEntry, receivedAt: string, userId: string | null) =>
   env.DB.prepare(
     `INSERT OR REPLACE INTO event_logs (
       id,
+      user_id,
       timestamp,
       type,
       hostname,
@@ -179,10 +370,11 @@ const insertLogEvent = (env: Env, event: EventLogEntry, receivedAt: string) =>
       detail,
       received_at,
       raw_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       event.id,
+      userId,
       event.timestamp,
       event.type,
       event.hostname,
@@ -199,7 +391,7 @@ const insertLogEvent = (env: Env, event: EventLogEntry, receivedAt: string) =>
     )
     .run()
 
-const handlePostLogs = async (request: Request, env: Env) => {
+const handlePostLogs = async (request: Request, env: Env, auth: AuthContext) => {
   const payload = await parseLogPayload(request)
 
   if (!payload) {
@@ -207,9 +399,10 @@ const handlePostLogs = async (request: Request, env: Env) => {
   }
 
   const receivedAt = new Date().toISOString()
+  const userId = auth.type === "google" ? auth.user.id : null
 
   for (const event of payload.events) {
-    await insertLogEvent(env, event, receivedAt)
+    await insertLogEvent(env, event, receivedAt, userId)
   }
 
   return json({
@@ -227,12 +420,37 @@ const normalizeLimit = (url: URL) => {
   return Math.min(200, Math.max(1, Math.floor(rawLimit)))
 }
 
-const handleGetLogs = async (request: Request, env: Env) => {
+const handleGetLogs = async (request: Request, env: Env, auth: AuthContext) => {
   const url = new URL(request.url)
   const limit = normalizeLimit(url)
-  const result = await env.DB.prepare(
+  const statement =
+    auth.type === "google"
+      ? env.DB.prepare(
+          `SELECT
+            id,
+            user_id,
+            timestamp,
+            type,
+            hostname,
+            url,
+            field_signature,
+            profile_key,
+            previous_value,
+            next_value,
+            source,
+            run_id,
+            detail,
+            received_at,
+            raw_json
+          FROM event_logs
+          WHERE user_id = ?
+          ORDER BY received_at DESC, timestamp DESC
+          LIMIT ?`
+        ).bind(auth.user.id, limit)
+      : env.DB.prepare(
     `SELECT
       id,
+      user_id,
       timestamp,
       type,
       hostname,
@@ -249,12 +467,140 @@ const handleGetLogs = async (request: Request, env: Env) => {
     FROM event_logs
     ORDER BY received_at DESC, timestamp DESC
     LIMIT ?`
-  )
-    .bind(limit)
-    .all<EventLogRow>()
+        ).bind(limit)
+  const result = await statement.all<EventLogRow>()
 
   return json({
     logs: result.results ?? []
+  })
+}
+
+const formatUserResponse = (user: AuthUser) => ({
+  user: {
+    sub: user.googleSub,
+    email: user.email,
+    name: user.name,
+    picture: user.picture,
+    signedInAt: new Date().toISOString()
+  }
+})
+
+const isSyncedSnapshot = (value: unknown): value is SyncedSnapshot => {
+  if (!isRecord(value) || value.schemaVersion !== 1 || !isRecord(value.profile) || !isRecord(value.settings)) {
+    return false
+  }
+
+  const profile = value.profile
+  const settings = value.settings
+  const cloudLogSync = settings.cloudLogSync
+  const domainPolicies = value.domainPolicies
+
+  return (
+    requiredProfileKeys.every((key) => isString(profile[key])) &&
+    typeof settings.enabled === "boolean" &&
+    typeof settings.observeDynamicForms === "boolean" &&
+    typeof settings.minMatchCount === "number" &&
+    Number.isFinite(settings.minMatchCount) &&
+    isRecord(cloudLogSync) &&
+    isString(cloudLogSync.endpointUrl) &&
+    isString(cloudLogSync.bearerToken) &&
+    typeof cloudLogSync.includeFieldValues === "boolean" &&
+    isRecord(domainPolicies) &&
+    Object.values(domainPolicies).every((policy) => policy === "default" || policy === "whitelist" || policy === "blacklist") &&
+    optionalString(value.updatedAt)
+  )
+}
+
+const parseSyncPayload = async (request: Request) => {
+  let body: unknown
+  try {
+    body = await request.json()
+  } catch (_error) {
+    return null
+  }
+
+  return isSyncedSnapshot(body) ? body : null
+}
+
+const handleGetAuthMe = (auth: AuthContext) => {
+  if (auth.type !== "google") {
+    return json({ error: "google auth required" }, { status: 403 })
+  }
+
+  return json(formatUserResponse(auth.user))
+}
+
+const handlePutSyncSettings = async (request: Request, env: Env, auth: AuthContext) => {
+  if (auth.type !== "google") {
+    return json({ error: "google auth required" }, { status: 403 })
+  }
+
+  const payload = await parseSyncPayload(request)
+  if (!payload) {
+    return json({ error: "malformed payload" }, { status: 400 })
+  }
+
+  const updatedAt = payload.updatedAt || new Date().toISOString()
+  await env.DB.prepare(
+    `INSERT OR REPLACE INTO user_sync_snapshots (
+      user_id,
+      schema_version,
+      profile_json,
+      settings_json,
+      domain_policies_json,
+      updated_at,
+      raw_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+  )
+    .bind(
+      auth.user.id,
+      payload.schemaVersion,
+      JSON.stringify(payload.profile),
+      JSON.stringify(payload.settings),
+      JSON.stringify(payload.domainPolicies),
+      updatedAt,
+      JSON.stringify({
+        ...payload,
+        updatedAt
+      })
+    )
+    .run()
+
+  return json({
+    ok: true,
+    updatedAt
+  })
+}
+
+const handleGetSyncSettings = async (env: Env, auth: AuthContext) => {
+  if (auth.type !== "google") {
+    return json({ error: "google auth required" }, { status: 403 })
+  }
+
+  const result = await env.DB.prepare(
+    `SELECT user_id, schema_version, profile_json, settings_json, domain_policies_json, updated_at, raw_json
+     FROM user_sync_snapshots
+     WHERE user_id = ?
+     LIMIT 1`
+  )
+    .bind(auth.user.id)
+    .all<SyncSnapshotRow>()
+  const row = result.results?.[0]
+
+  if (!row) {
+    return json({
+      snapshot: null
+    })
+  }
+
+  return json({
+    snapshot: {
+      schemaVersion: 1,
+      profile: JSON.parse(row.profile_json),
+      settings: JSON.parse(row.settings_json),
+      domainPolicies: JSON.parse(row.domain_policies_json),
+      updatedAt: row.updated_at
+    }
   })
 }
 
@@ -267,20 +613,33 @@ const handleRequest = async (request: Request, env: Env) => {
   }
 
   const url = new URL(request.url)
-  if (url.pathname !== "/logs") {
+  if (!["/logs", "/auth/me", "/sync/settings"].includes(url.pathname)) {
     return json({ error: "not found" }, { status: 404 })
   }
 
-  if (!(await isAuthorized(request, env))) {
+  const auth = await authenticateRequest(request, env)
+  if (!auth) {
     return json({ error: "unauthorized" }, { status: 401 })
   }
 
-  if (request.method === "POST") {
-    return handlePostLogs(request, env)
+  if (url.pathname === "/auth/me" && request.method === "GET") {
+    return handleGetAuthMe(auth)
   }
 
-  if (request.method === "GET") {
-    return handleGetLogs(request, env)
+  if (url.pathname === "/sync/settings" && request.method === "PUT") {
+    return handlePutSyncSettings(request, env, auth)
+  }
+
+  if (url.pathname === "/sync/settings" && request.method === "GET") {
+    return handleGetSyncSettings(env, auth)
+  }
+
+  if (url.pathname === "/logs" && request.method === "POST") {
+    return handlePostLogs(request, env, auth)
+  }
+
+  if (url.pathname === "/logs" && request.method === "GET") {
+    return handleGetLogs(request, env, auth)
   }
 
   return json({ error: "method not allowed" }, { status: 405 })
