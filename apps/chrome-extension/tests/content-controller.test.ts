@@ -170,6 +170,132 @@ describe("content-controller", () => {
     expect(snapshot.eventLog.some((entry: { type: string }) => entry.type === "field_corrected_by_user")).toBe(true)
   })
 
+  it("learns safe manual input and hydrates empty profile fields", async () => {
+    const { chromeMock } = createChromeMock({
+      autofillProfile: emptyProfile
+    })
+    ;(globalThis as { chrome: typeof chrome }).chrome = chromeMock as unknown as typeof chrome
+    document.body.innerHTML = `
+      <label for="email">Email</label>
+      <input id="email" name="email" />
+    `
+
+    const controller = createAutofillController({
+      chromeApi: chromeMock as unknown as typeof chrome,
+      debounceMs: 10
+    })
+
+    await controller.initialize()
+    await vi.runAllTimersAsync()
+    await flush()
+
+    const field = document.getElementById("email") as HTMLInputElement
+    field.value = "learned@example.com"
+    field.dispatchEvent(new Event("input", { bubbles: true }))
+    field.dispatchEvent(new Event("blur", { bubbles: true }))
+
+    await vi.runAllTimersAsync()
+    await flush()
+
+    const snapshot = await getStorageSnapshot()
+    const memoryEntry = Object.values(snapshot.fieldMemory)[0] as { lastUserValue?: string; profileKey?: string } | undefined
+
+    expect(snapshot.profile.email).toBe("learned@example.com")
+    expect(memoryEntry).toMatchObject({
+      profileKey: "email",
+      lastUserValue: "learned@example.com"
+    })
+    expect(snapshot.eventLog.some((entry: { type: string }) => entry.type === "field_learned_from_user")).toBe(true)
+  })
+
+  it("learns and later autofills custom fields outside the fixed profile", async () => {
+    const { chromeMock } = createChromeMock({
+      autofillProfile: emptyProfile
+    })
+    ;(globalThis as { chrome: typeof chrome }).chrome = chromeMock as unknown as typeof chrome
+    document.body.innerHTML = `
+      <label for="member-id">会員番号</label>
+      <input id="member-id" name="member_id" />
+    `
+
+    const learningController = createAutofillController({
+      chromeApi: chromeMock as unknown as typeof chrome,
+      debounceMs: 10
+    })
+
+    await learningController.initialize()
+    await vi.runAllTimersAsync()
+    await flush()
+
+    const learnedField = document.getElementById("member-id") as HTMLInputElement
+    learnedField.value = "MEM-12345"
+    learnedField.dispatchEvent(new Event("input", { bubbles: true }))
+    learnedField.dispatchEvent(new Event("blur", { bubbles: true }))
+
+    await vi.runAllTimersAsync()
+    await flush()
+
+    const learnedSnapshot = await getStorageSnapshot()
+    const memoryEntry = Object.values(learnedSnapshot.fieldMemory)[0] as { lastUserValue?: string; profileKey?: string } | undefined
+    expect(memoryEntry).toMatchObject({
+      lastUserValue: "MEM-12345"
+    })
+    expect(memoryEntry?.profileKey).toBeUndefined()
+
+    document.body.innerHTML = `
+      <label for="member-id">会員番号</label>
+      <input id="member-id" name="member_id" />
+    `
+
+    const autofillController = createAutofillController({
+      chromeApi: chromeMock as unknown as typeof chrome,
+      debounceMs: 10
+    })
+
+    await autofillController.initialize()
+    await vi.runAllTimersAsync()
+    await flush()
+
+    expect((document.getElementById("member-id") as HTMLInputElement).value).toBe("MEM-12345")
+  })
+
+  it("does not learn dangerous manual inputs", async () => {
+    const { chromeMock } = createChromeMock({
+      autofillProfile: emptyProfile
+    })
+    ;(globalThis as { chrome: typeof chrome }).chrome = chromeMock as unknown as typeof chrome
+    document.body.innerHTML = `
+      <input id="email-otp" name="email_otp" autocomplete="one-time-code" />
+      <textarea id="recaptcha" name="g-recaptcha-response"></textarea>
+    `
+
+    const controller = createAutofillController({
+      chromeApi: chromeMock as unknown as typeof chrome,
+      debounceMs: 10
+    })
+
+    await controller.initialize()
+    await vi.runAllTimersAsync()
+    await flush()
+
+    const otp = document.getElementById("email-otp") as HTMLInputElement
+    otp.value = "123456"
+    otp.dispatchEvent(new Event("input", { bubbles: true }))
+    otp.dispatchEvent(new Event("blur", { bubbles: true }))
+
+    const captcha = document.getElementById("recaptcha") as HTMLTextAreaElement
+    captcha.value = "captcha-token"
+    captcha.dispatchEvent(new Event("input", { bubbles: true }))
+    captcha.dispatchEvent(new Event("blur", { bubbles: true }))
+
+    await vi.runAllTimersAsync()
+    await flush()
+
+    const snapshot = await getStorageSnapshot()
+    expect(snapshot.fieldMemory).toEqual({})
+    expect(snapshot.eventLog.some((entry: { type: string }) => entry.type === "field_learned_from_user")).toBe(false)
+  })
+
   it("fills derived family name, given name, city and address line 2 fields", async () => {
     const { chromeMock } = createChromeMock({
       autofillProfile: derivedProfile

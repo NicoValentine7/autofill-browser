@@ -67,11 +67,13 @@ export type FieldDescriptor = {
 export type FieldMemoryEntry = {
   hostname: string
   fieldSignature: string
-  profileKey: ProfileKey
+  profileKey?: ProfileKey
+  learnedLabel?: string
   lastAutofilledValue: string
   lastUserValue: string
   timesAutofilled: number
   timesCorrected: number
+  timesLearned?: number
   updatedAt: string
 }
 
@@ -87,6 +89,7 @@ export type EventLogType =
   | "autofill_run"
   | "field_filled"
   | "field_corrected_by_user"
+  | "field_learned_from_user"
   | "setting_changed"
   | "domain_policy_changed"
   | "profile_updated"

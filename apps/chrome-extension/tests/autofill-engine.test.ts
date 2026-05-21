@@ -189,6 +189,58 @@ describe("autofill-engine", () => {
     expect(collectAutofillCandidates(document, snapshot, window.location)).toEqual([])
   })
 
+  it("fills learned custom fields even when they do not map to the fixed profile", () => {
+    document.body.innerHTML = `
+      <label for="member-id">会員番号</label>
+      <input id="member-id" name="member_id" />
+    `
+    const memberField = document.getElementById("member-id") as HTMLInputElement
+    const fieldSignature = buildFieldSignature(buildFieldDescriptor(memberField))
+    const snapshot = createSnapshot()
+    snapshot.profile = createEmptyProfile()
+    snapshot.fieldMemory = {
+      [`example.com::${fieldSignature}`]: {
+        hostname: "example.com",
+        fieldSignature,
+        learnedLabel: "会員番号",
+        lastAutofilledValue: "",
+        lastUserValue: "MEM-12345",
+        timesAutofilled: 0,
+        timesCorrected: 0,
+        timesLearned: 1,
+        updatedAt: new Date().toISOString()
+      }
+    }
+
+    const values = valueById(snapshot)
+
+    expect(values["member-id"]).toBe("MEM-12345")
+  })
+
+  it("does not let custom field memory re-enable one-time-code fields", () => {
+    document.body.innerHTML = `
+      <label for="otp">Email OTP</label>
+      <input id="otp" name="email_otp" autocomplete="one-time-code" />
+    `
+    const otpField = document.getElementById("otp") as HTMLInputElement
+    const fieldSignature = buildFieldSignature(buildFieldDescriptor(otpField))
+    const snapshot = createSnapshot()
+    snapshot.fieldMemory = {
+      [`example.com::${fieldSignature}`]: {
+        hostname: "example.com",
+        fieldSignature,
+        lastAutofilledValue: "",
+        lastUserValue: "123456",
+        timesAutofilled: 0,
+        timesCorrected: 0,
+        timesLearned: 1,
+        updatedAt: new Date().toISOString()
+      }
+    }
+
+    expect(collectAutofillCandidates(document, snapshot, window.location)).toEqual([])
+  })
+
   it("skips hidden and aria-hidden fields", () => {
     document.body.innerHTML = `
       <input id="hidden-attr" name="email" hidden />

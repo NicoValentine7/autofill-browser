@@ -70,6 +70,7 @@ const eventTypeLabels: Record<EventLogEntry["type"], string> = {
   autofill_run: "自動入力実行",
   field_filled: "フィールド入力",
   field_corrected_by_user: "手修正を記録",
+  field_learned_from_user: "手入力を学習",
   setting_changed: "設定変更",
   domain_policy_changed: "ドメイン制御変更",
   profile_updated: "プロフィール更新",

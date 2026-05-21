@@ -18,7 +18,7 @@ export type AutofillCandidate = {
   field: FieldElement
   descriptor: FieldDescriptor
   fieldSignature: string
-  profileKey: ProfileKey
+  profileKey?: ProfileKey
   fieldMemoryEntry?: FieldMemoryEntry
   rawValue: string
   appliedValue: string
@@ -171,6 +171,38 @@ const resolveMemoryEntry = (
 
 const resolveProfileKeyForDescriptor = (descriptor: FieldDescriptor, memoryEntry?: FieldMemoryEntry) =>
   hasLearnedCorrection(memoryEntry) ? memoryEntry?.profileKey ?? matchProfileKey(descriptor) : matchProfileKey(descriptor)
+
+export type LearnableFieldDescriptor = {
+  descriptor: FieldDescriptor
+  fieldSignature: string
+  profileKey: ProfileKey | null
+  fieldMemoryEntry?: FieldMemoryEntry
+}
+
+export const describeLearnableField = (
+  field: Element,
+  snapshot: StorageSnapshot,
+  currentLocation: Pick<Location, "hostname" | "href">
+): LearnableFieldDescriptor | null => {
+  if (!isEligibleField(field)) {
+    return null
+  }
+
+  const descriptor = buildFieldDescriptor(field, currentLocation)
+  if (isSensitiveAutofillTarget(descriptor, snapshot.remoteRules?.blockedIdentityTokens ?? [])) {
+    return null
+  }
+
+  const fieldSignature = buildFieldSignature(descriptor)
+  const fieldMemoryEntry = resolveMemoryEntry(snapshot, descriptor, fieldSignature)
+
+  return {
+    descriptor,
+    fieldSignature,
+    profileKey: resolveProfileKeyForDescriptor(descriptor, fieldMemoryEntry),
+    fieldMemoryEntry
+  }
+}
 
 const resolvePostalValue = (descriptor: FieldDescriptor, postalCode: string, context: CandidateContext) => {
   const identity = getDescriptorIdentity(descriptor)
@@ -357,12 +389,16 @@ const resolveProfileValueForField = (
 
 const resolveRawValue = (
   descriptor: FieldDescriptor,
-  profileKey: ProfileKey,
+  profileKey: ProfileKey | undefined,
   profile: StorageSnapshot["profile"],
   memoryEntry: FieldMemoryEntry | undefined,
   context: CandidateContext
 ) => {
   const rememberedValue = hasLearnedCorrection(memoryEntry) ? memoryEntry?.lastUserValue.trim() || "" : ""
+  if (!profileKey) {
+    return rememberedValue
+  }
+
   return rememberedValue || resolveProfileValueForField(descriptor, profileKey, profile, context)
 }
 
@@ -395,7 +431,7 @@ export const isEligibleField = (field: Element): field is FieldElement => {
 
 export const resolveAppliedValue = (
   descriptor: FieldDescriptor,
-  profileKey: ProfileKey,
+  profileKey: ProfileKey | undefined,
   profile: StorageSnapshot["profile"],
   memoryEntry: FieldMemoryEntry | undefined,
   context: CandidateContext
@@ -436,32 +472,33 @@ export const collectAutofillCandidates = (
       continue
     }
 
-    const descriptor = buildFieldDescriptor(field, currentLocation)
-    if (isSensitiveAutofillTarget(descriptor, snapshot.remoteRules?.blockedIdentityTokens ?? [])) {
+    const learnableField = describeLearnableField(field, snapshot, currentLocation)
+    if (!learnableField) {
       continue
     }
 
-    const fieldSignature = buildFieldSignature(descriptor)
-    const memoryEntry = resolveMemoryEntry(snapshot, descriptor, fieldSignature)
-    const profileKey = resolveProfileKeyForDescriptor(descriptor, memoryEntry)
-
-    if (!profileKey) {
+    const hasLearnedValue = hasLearnedCorrection(learnableField.fieldMemoryEntry)
+    if (!learnableField.profileKey && !hasLearnedValue) {
       continue
     }
 
     drafts.push({
       field,
-      descriptor,
-      fieldSignature,
-      fieldMemoryEntry: memoryEntry,
-      profileKey
+      descriptor: learnableField.descriptor,
+      fieldSignature: learnableField.fieldSignature,
+      fieldMemoryEntry: learnableField.fieldMemoryEntry,
+      profileKey: learnableField.profileKey ?? undefined
     })
   }
 
-  const pageProfileKeys = new Set(drafts.map((candidate) => candidate.profileKey))
+  const pageProfileKeys = new Set(
+    drafts.flatMap((candidate) => (candidate.profileKey ? [candidate.profileKey] : []))
+  )
 
   return drafts.flatMap((draft) => {
-    const sameKeyDrafts = drafts.filter((candidate) => candidate.profileKey === draft.profileKey)
+    const sameKeyDrafts = draft.profileKey
+      ? drafts.filter((candidate) => candidate.profileKey === draft.profileKey)
+      : [draft]
     const context: CandidateContext = {
       groupIndex: sameKeyDrafts.findIndex((candidate) => candidate.field === draft.field),
       groupSize: sameKeyDrafts.length,
