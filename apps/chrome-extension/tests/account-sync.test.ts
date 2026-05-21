@@ -10,14 +10,7 @@ const snapshot: StorageSnapshot = {
     fullName: "山田 太郎",
     email: "taro@example.com"
   },
-  settings: {
-    ...DEFAULT_AUTOFILL_SETTINGS,
-    cloudLogSync: {
-      endpointUrl: "https://logs.example.com/logs",
-      bearerToken: "secret-token",
-      includeFieldValues: true
-    }
-  },
+  settings: DEFAULT_AUTOFILL_SETTINGS,
   domainPolicies: {
     "example.com": "whitelist"
   },
@@ -27,24 +20,25 @@ const snapshot: StorageSnapshot = {
 }
 
 describe("account-sync", () => {
-  it("derives worker API URLs from the /logs endpoint", () => {
-    expect(buildWorkerUrl("https://logs.example.com/logs", "/auth/me")).toBe("https://logs.example.com/auth/me")
-    expect(buildWorkerUrl("https://logs.example.com/api/logs", "/sync/settings")).toBe(
-      "https://logs.example.com/api/sync/settings"
+  it("derives worker API URLs from the fixed cloud worker", () => {
+    expect(buildWorkerUrl("/me")).toBe("https://autofill-browser-log-worker.y-elucidator.workers.dev/me")
+    expect(buildWorkerUrl("/me/settings")).toBe(
+      "https://autofill-browser-log-worker.y-elucidator.workers.dev/me/settings"
     )
   })
 
-  it("keeps endpoint and shared bearer token out of synced settings", () => {
+  it("keeps cloud transport config out of synced settings", () => {
     const syncedSnapshot = buildSyncedSnapshot(snapshot)
 
     expect(syncedSnapshot.profile.fullName).toBe("山田 太郎")
     expect(syncedSnapshot.domainPolicies).toMatchObject({
       "example.com": "whitelist"
     })
-    expect(syncedSnapshot.settings.cloudLogSync).toMatchObject({
-      endpointUrl: "",
-      bearerToken: "",
-      includeFieldValues: true
+    expect(syncedSnapshot.settings).toMatchObject({
+      enabled: true,
+      observeDynamicForms: true,
+      minMatchCount: 1
     })
+    expect(syncedSnapshot.settings).not.toHaveProperty("cloudLogSync")
   })
 })

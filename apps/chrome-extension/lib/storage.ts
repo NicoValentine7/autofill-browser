@@ -6,7 +6,6 @@ import {
   createEmptyProfile,
   type AutofillEventSource,
   type AutofillSettings,
-  type CloudLogSyncSettings,
   type DomainPolicy,
   type EventLogEntry,
   type FieldMemoryEntry,
@@ -26,7 +25,6 @@ const STORAGE_KEYS = {
 } as const
 
 const EVENT_LOG_LIMIT = 1000
-export const DEFAULT_CHROME_CLOUD_LOG_ENDPOINT_URL = "https://autofill-browser-log-worker.y-elucidator.workers.dev/logs"
 
 export type GoogleAuthUser = {
   sub: string
@@ -162,24 +160,13 @@ const normalizeProfile = (profile?: Partial<StoredProfile>, fallbackProfile: Sto
   return hydrateDerivedProfileValues(next)
 }
 
-const normalizeCloudLogSyncSettings = (settings?: Partial<CloudLogSyncSettings>): CloudLogSyncSettings => {
-  const endpointUrl = settings?.endpointUrl?.trim() || DEFAULT_CHROME_CLOUD_LOG_ENDPOINT_URL
-
-  return {
-    endpointUrl,
-    bearerToken: settings?.bearerToken?.trim() ?? DEFAULT_AUTOFILL_SETTINGS.cloudLogSync.bearerToken,
-    includeFieldValues: settings?.includeFieldValues ?? DEFAULT_AUTOFILL_SETTINGS.cloudLogSync.includeFieldValues
-  }
-}
-
 const normalizeSettings = (settings?: Partial<AutofillSettings>): AutofillSettings => ({
   enabled: settings?.enabled ?? DEFAULT_AUTOFILL_SETTINGS.enabled,
   observeDynamicForms: settings?.observeDynamicForms ?? DEFAULT_AUTOFILL_SETTINGS.observeDynamicForms,
   minMatchCount:
     settings?.minMatchCount && settings.minMatchCount > 0
       ? Math.max(1, Math.floor(settings.minMatchCount))
-      : DEFAULT_AUTOFILL_SETTINGS.minMatchCount,
-  cloudLogSync: normalizeCloudLogSyncSettings(settings?.cloudLogSync)
+      : DEFAULT_AUTOFILL_SETTINGS.minMatchCount
 })
 
 const normalizeGoogleAuthUser = (user?: Partial<GoogleAuthUser> | null): GoogleAuthUser | undefined => {
@@ -205,20 +192,7 @@ const normalizeAccountSyncState = (state?: Partial<AccountSyncState>): AccountSy
   lastRemoteUpdatedAt: state?.lastRemoteUpdatedAt?.trim() || undefined
 })
 
-const redactSettingsPatch = (settings: Partial<AutofillSettings>) => {
-  const redactedSettings: Partial<AutofillSettings> = {
-    ...settings
-  }
-
-  if (settings.cloudLogSync) {
-    redactedSettings.cloudLogSync = {
-      ...settings.cloudLogSync,
-      bearerToken: settings.cloudLogSync.bearerToken ? "[configured]" : ""
-    }
-  }
-
-  return JSON.stringify(redactedSettings)
-}
+const redactSettingsPatch = (settings: Partial<AutofillSettings>) => JSON.stringify(settings)
 
 const normalizeEventEntries = (entries: NewEventLogEntry[]) =>
   entries.map(
@@ -290,7 +264,7 @@ export const commitStorageChanges = async (update: StorageUpdate): Promise<Stora
   })
 
   if (normalizedEventEntries.length > 0) {
-    void sendCloudLogSyncMessage(normalizedEventEntries, next.settings.cloudLogSync, Boolean(next.googleAuthUser))
+    void sendCloudLogSyncMessage(normalizedEventEntries, Boolean(next.googleAuthUser))
   }
 
   return next
@@ -378,22 +352,13 @@ export const saveAccountSyncState = async (accountSync: AccountSyncState) =>
 export const applySyncedSnapshot = async (
   syncedSnapshot: Pick<StorageSnapshot, "profile" | "settings" | "domainPolicies">,
   remoteUpdatedAt?: string
-) => {
-  const current = await getStorageSnapshot()
-  return commitStorageChanges({
+) =>
+  commitStorageChanges({
     profile: syncedSnapshot.profile,
-    settings: {
-      ...syncedSnapshot.settings,
-      cloudLogSync: {
-        ...syncedSnapshot.settings.cloudLogSync,
-        endpointUrl: current.settings.cloudLogSync.endpointUrl,
-        bearerToken: current.settings.cloudLogSync.bearerToken
-      }
-    },
+    settings: syncedSnapshot.settings,
     domainPolicies: syncedSnapshot.domainPolicies,
     accountSync: {
       lastPulledAt: new Date().toISOString(),
       lastRemoteUpdatedAt: remoteUpdatedAt
     }
   })
-}

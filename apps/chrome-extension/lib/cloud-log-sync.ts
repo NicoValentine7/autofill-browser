@@ -1,4 +1,6 @@
-import type { CloudLogSyncSettings, EventLogEntry } from "@autofill-browser/autofill-core"
+import type { EventLogEntry } from "@autofill-browser/autofill-core"
+
+import { CLOUD_LOG_INCLUDE_FIELD_VALUES, buildCloudWorkerUrl } from "./cloud-config"
 
 export type CloudLogPayload = {
   schemaVersion: 1
@@ -28,7 +30,7 @@ const sanitizeUrlForCloud = (url: string) => {
 
 export const buildCloudLogPayload = (
   events: EventLogEntry[],
-  settings: Pick<CloudLogSyncSettings, "includeFieldValues">
+  options: { includeFieldValues?: boolean } = {}
 ): CloudLogPayload => ({
   schemaVersion: 1,
   source: "chrome-extension",
@@ -39,7 +41,7 @@ export const buildCloudLogPayload = (
       url: sanitizeUrlForCloud(event.url)
     }
 
-    if (!settings.includeFieldValues) {
+    if (!(options.includeFieldValues ?? CLOUD_LOG_INCLUDE_FIELD_VALUES)) {
       delete sanitizedEvent.previousValue
       delete sanitizedEvent.nextValue
     }
@@ -50,20 +52,19 @@ export const buildCloudLogPayload = (
 
 export const sendEventLogEntriesToCloud = async (
   events: EventLogEntry[],
-  settings: CloudLogSyncSettings,
   fetchImpl: FetchLike = fetch,
   googleAccessToken?: string | null
 ) => {
-  const endpointUrl = settings.endpointUrl.trim()
+  const endpointUrl = buildCloudWorkerUrl("/me/events")
 
-  if (events.length === 0 || !endpointUrl.startsWith("https://")) {
+  if (events.length === 0) {
     return false
   }
 
   const headers: Record<string, string> = {
     "content-type": "application/json"
   }
-  const bearerToken = googleAccessToken?.trim() || settings.bearerToken.trim()
+  const bearerToken = googleAccessToken?.trim()
 
   if (!bearerToken) {
     return false
@@ -77,7 +78,7 @@ export const sendEventLogEntriesToCloud = async (
     const response = await fetchImpl(endpointUrl, {
       method: "POST",
       headers,
-      body: JSON.stringify(buildCloudLogPayload(events, settings)),
+      body: JSON.stringify(buildCloudLogPayload(events)),
       keepalive: true
     })
 

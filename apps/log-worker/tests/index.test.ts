@@ -177,7 +177,7 @@ const authHeaders = {
 
 const postLogs = (env: Env, payload: unknown, headers: Record<string, string> = authHeaders) =>
   worker.fetch(
-    new Request("https://logs.example.com/logs", {
+    new Request("https://logs.example.com/admin/logs", {
       method: "POST",
       headers,
       body: JSON.stringify(payload)
@@ -284,7 +284,7 @@ describe("log-worker", () => {
     })
 
     const response = await worker.fetch(
-      new Request("https://logs.example.com/logs?limit=1", {
+      new Request("https://logs.example.com/admin/logs?limit=1", {
         headers: {
           authorization: "Bearer secret-token"
         }
@@ -319,7 +319,7 @@ describe("log-worker", () => {
     mockGoogleTokenInfo()
 
     const response = await worker.fetch(
-      new Request("https://logs.example.com/auth/me", {
+      new Request("https://logs.example.com/me", {
         headers: googleHeaders
       }),
       env
@@ -340,7 +340,7 @@ describe("log-worker", () => {
       aud: "another-client.apps.googleusercontent.com"
     })
     const wrongClientResponse = await worker.fetch(
-      new Request("https://logs.example.com/auth/me", {
+      new Request("https://logs.example.com/me", {
         headers: googleHeaders
       }),
       wrongClientEnv
@@ -352,7 +352,7 @@ describe("log-worker", () => {
       email_verified: "false"
     })
     const unverifiedResponse = await worker.fetch(
-      new Request("https://logs.example.com/auth/me", {
+      new Request("https://logs.example.com/me", {
         headers: googleHeaders
       }),
       unverifiedEnv
@@ -366,12 +366,19 @@ describe("log-worker", () => {
     const env = createEnv()
     mockGoogleTokenInfo()
 
-    await postLogs(env, {
-      schemaVersion: 1,
-      source: "chrome-extension",
-      emittedAt: "2026-05-20T12:00:01.000Z",
-      events: [event]
-    }, googleHeaders)
+    await worker.fetch(
+      new Request("https://logs.example.com/me/events", {
+        method: "POST",
+        headers: googleHeaders,
+        body: JSON.stringify({
+          schemaVersion: 1,
+          source: "chrome-extension",
+          emittedAt: "2026-05-20T12:00:01.000Z",
+          events: [event]
+        })
+      }),
+      env
+    )
     env.DB.rows.push({
       ...env.DB.rows[0],
       id: "other-user-event",
@@ -379,7 +386,7 @@ describe("log-worker", () => {
     })
 
     const response = await worker.fetch(
-      new Request("https://logs.example.com/logs?limit=50", {
+      new Request("https://logs.example.com/me/events?limit=50", {
         headers: googleHeaders
       }),
       env
@@ -411,12 +418,7 @@ describe("log-worker", () => {
       settings: {
         enabled: true,
         observeDynamicForms: true,
-        minMatchCount: 1,
-        cloudLogSync: {
-          endpointUrl: "",
-          bearerToken: "",
-          includeFieldValues: true
-        }
+        minMatchCount: 1
       },
       domainPolicies: {
         "example.com": "whitelist"
@@ -425,7 +427,7 @@ describe("log-worker", () => {
     }
 
     const putResponse = await worker.fetch(
-      new Request("https://logs.example.com/sync/settings", {
+      new Request("https://logs.example.com/me/settings", {
         method: "PUT",
         headers: googleHeaders,
         body: JSON.stringify(snapshot)
@@ -433,7 +435,7 @@ describe("log-worker", () => {
       env
     )
     const getResponse = await worker.fetch(
-      new Request("https://logs.example.com/sync/settings", {
+      new Request("https://logs.example.com/me/settings", {
         headers: googleHeaders
       }),
       env

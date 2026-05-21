@@ -1,4 +1,4 @@
-import type { AutofillEventSource, CloudLogSyncSettings, EventLogEntry } from "@autofill-browser/autofill-core"
+import type { AutofillEventSource, EventLogEntry } from "@autofill-browser/autofill-core"
 
 export type ExtensionMessage =
   | {
@@ -18,7 +18,6 @@ export type ExtensionMessage =
   | {
       type: "SYNC_EVENT_LOGS_TO_CLOUD"
       events: EventLogEntry[]
-      settings: CloudLogSyncSettings
       preferGoogleAuth?: boolean
     }
 
@@ -32,12 +31,8 @@ export const sendMessageToTab = async (tabId: number, message: ExtensionMessage)
   return true
 }
 
-export const sendCloudLogSyncMessage = async (
-  events: EventLogEntry[],
-  settings: CloudLogSyncSettings,
-  preferGoogleAuth = false
-) => {
-  if (events.length === 0 || !settings.endpointUrl.trim().startsWith("https://")) {
+export const sendCloudLogSyncMessage = async (events: EventLogEntry[], preferGoogleAuth = false) => {
+  if (events.length === 0 || !preferGoogleAuth) {
     return false
   }
 
@@ -45,7 +40,6 @@ export const sendCloudLogSyncMessage = async (
     await chrome.runtime.sendMessage({
       type: "SYNC_EVENT_LOGS_TO_CLOUD",
       events,
-      settings,
       preferGoogleAuth
     } satisfies ExtensionMessage)
   } catch (_error) {

@@ -18,7 +18,7 @@ export type D1Database = {
 
 export type Env = {
   DB: D1Database
-  CLOUD_LOG_INGEST_TOKEN: string
+  CLOUD_LOG_INGEST_TOKEN?: string
   GOOGLE_OAUTH_CLIENT_ID?: string
 }
 
@@ -96,11 +96,6 @@ type SyncedSnapshot = {
     enabled: boolean
     observeDynamicForms: boolean
     minMatchCount: number
-    cloudLogSync: {
-      endpointUrl: string
-      bearerToken: string
-      includeFieldValues: boolean
-    }
   }
   domainPolicies: Record<string, "default" | "whitelist" | "blacklist">
   updatedAt: string
@@ -352,6 +347,32 @@ const authenticateRequest = async (request: Request, env: Env): Promise<AuthCont
   }
 }
 
+const authenticateGoogleRequest = async (request: Request, env: Env): Promise<AuthContext | null> => {
+  const token = getBearerToken(request)
+  const googleUser = await verifyGoogleToken(token, env)
+
+  if (!googleUser) {
+    return null
+  }
+
+  return {
+    type: "google",
+    user: await upsertGoogleUser(env, googleUser)
+  }
+}
+
+const authenticateAdminRequest = async (request: Request, env: Env): Promise<AuthContext | null> => {
+  const token = getBearerToken(request)
+
+  if (!(await isSharedTokenAuthorized(token, env))) {
+    return null
+  }
+
+  return {
+    type: "shared-token"
+  }
+}
+
 const insertLogEvent = (env: Env, event: EventLogEntry, receivedAt: string, userId: string | null) =>
   env.DB.prepare(
     `INSERT OR REPLACE INTO event_logs (
@@ -492,7 +513,6 @@ const isSyncedSnapshot = (value: unknown): value is SyncedSnapshot => {
 
   const profile = value.profile
   const settings = value.settings
-  const cloudLogSync = settings.cloudLogSync
   const domainPolicies = value.domainPolicies
 
   return (
@@ -501,10 +521,6 @@ const isSyncedSnapshot = (value: unknown): value is SyncedSnapshot => {
     typeof settings.observeDynamicForms === "boolean" &&
     typeof settings.minMatchCount === "number" &&
     Number.isFinite(settings.minMatchCount) &&
-    isRecord(cloudLogSync) &&
-    isString(cloudLogSync.endpointUrl) &&
-    isString(cloudLogSync.bearerToken) &&
-    typeof cloudLogSync.includeFieldValues === "boolean" &&
     isRecord(domainPolicies) &&
     Object.values(domainPolicies).every((policy) => policy === "default" || policy === "whitelist" || policy === "blacklist") &&
     optionalString(value.updatedAt)
@@ -613,32 +629,70 @@ const handleRequest = async (request: Request, env: Env) => {
   }
 
   const url = new URL(request.url)
-  if (!["/logs", "/auth/me", "/sync/settings"].includes(url.pathname)) {
+  const googleRoutes = new Set(["/me", "/me/settings", "/me/events", "/auth/me", "/sync/settings"])
+  const adminRoutes = new Set(["/admin/logs"])
+  const legacyRoutes = new Set(["/logs"])
+
+  if (![...googleRoutes, ...adminRoutes, ...legacyRoutes].includes(url.pathname)) {
     return json({ error: "not found" }, { status: 404 })
   }
 
-  const auth = await authenticateRequest(request, env)
+  if (url.pathname === "/admin/logs") {
+    const auth = await authenticateAdminRequest(request, env)
+    if (!auth) {
+      return json({ error: "unauthorized" }, { status: 401 })
+    }
+
+    if (request.method === "POST") {
+      return handlePostLogs(request, env, auth)
+    }
+
+    if (request.method === "GET") {
+      return handleGetLogs(request, env, auth)
+    }
+
+    return json({ error: "method not allowed" }, { status: 405 })
+  }
+
+  if (url.pathname === "/logs") {
+    const auth = await authenticateRequest(request, env)
+    if (!auth) {
+      return json({ error: "unauthorized" }, { status: 401 })
+    }
+
+    if (request.method === "POST") {
+      return handlePostLogs(request, env, auth)
+    }
+
+    if (request.method === "GET") {
+      return handleGetLogs(request, env, auth)
+    }
+
+    return json({ error: "method not allowed" }, { status: 405 })
+  }
+
+  const auth = await authenticateGoogleRequest(request, env)
   if (!auth) {
     return json({ error: "unauthorized" }, { status: 401 })
   }
 
-  if (url.pathname === "/auth/me" && request.method === "GET") {
+  if ((url.pathname === "/me" || url.pathname === "/auth/me") && request.method === "GET") {
     return handleGetAuthMe(auth)
   }
 
-  if (url.pathname === "/sync/settings" && request.method === "PUT") {
+  if ((url.pathname === "/me/settings" || url.pathname === "/sync/settings") && request.method === "PUT") {
     return handlePutSyncSettings(request, env, auth)
   }
 
-  if (url.pathname === "/sync/settings" && request.method === "GET") {
+  if ((url.pathname === "/me/settings" || url.pathname === "/sync/settings") && request.method === "GET") {
     return handleGetSyncSettings(env, auth)
   }
 
-  if (url.pathname === "/logs" && request.method === "POST") {
+  if (url.pathname === "/me/events" && request.method === "POST") {
     return handlePostLogs(request, env, auth)
   }
 
-  if (url.pathname === "/logs" && request.method === "GET") {
+  if (url.pathname === "/me/events" && request.method === "GET") {
     return handleGetLogs(request, env, auth)
   }
 

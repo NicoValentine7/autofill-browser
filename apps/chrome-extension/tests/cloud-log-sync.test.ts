@@ -1,13 +1,7 @@
-import type { CloudLogSyncSettings, EventLogEntry } from "@autofill-browser/autofill-core"
+import type { EventLogEntry } from "@autofill-browser/autofill-core"
 import { describe, expect, it } from "vitest"
 
 import { buildCloudLogPayload, sendEventLogEntriesToCloud } from "../lib/cloud-log-sync"
-
-const baseSettings: CloudLogSyncSettings = {
-  endpointUrl: "https://logs.example.com/autofill",
-  bearerToken: "secret-token",
-  includeFieldValues: true
-}
 
 const event: EventLogEntry = {
   id: "event-1",
@@ -25,7 +19,7 @@ const event: EventLogEntry = {
 
 describe("cloud-log-sync", () => {
   it("includes field values and redacts URL secrets by default", () => {
-    const payload = buildCloudLogPayload([event], baseSettings)
+    const payload = buildCloudLogPayload([event])
 
     expect(payload.events[0]).toMatchObject({
       id: "event-1",
@@ -37,7 +31,6 @@ describe("cloud-log-sync", () => {
 
   it("can redact field values when explicitly disabled", () => {
     const payload = buildCloudLogPayload([event], {
-      ...baseSettings,
       includeFieldValues: false
     })
 
@@ -45,73 +38,34 @@ describe("cloud-log-sync", () => {
     expect(payload.events[0]?.nextValue).toBeUndefined()
   })
 
-  it("posts event logs to an HTTPS endpoint with bearer auth", async () => {
+  it("posts event logs to the cloud-native user endpoint with Google auth", async () => {
     const requests: Array<{ input: RequestInfo | URL; init?: RequestInit }> = []
     const fetchImpl = (async (input, init) => {
       requests.push({ input, init })
       return new Response(null, { status: 202 })
     }) satisfies typeof fetch
 
-    const result = await sendEventLogEntriesToCloud([event], baseSettings, fetchImpl)
+    const result = await sendEventLogEntriesToCloud([event], fetchImpl, "google-access-token")
 
     expect(result).toBe(true)
-    expect(requests[0]?.input).toBe(baseSettings.endpointUrl)
+    expect(requests[0]?.input).toBe("https://autofill-browser-log-worker.y-elucidator.workers.dev/me/events")
     expect(requests[0]?.init?.method).toBe("POST")
     expect(requests[0]?.init?.headers).toMatchObject({
-      authorization: "Bearer secret-token",
+      authorization: "Bearer google-access-token",
       "content-type": "application/json"
     })
   })
 
-  it("uses a Google access token instead of the shared bearer token when provided", async () => {
-    const requests: Array<{ input: RequestInfo | URL; init?: RequestInit }> = []
-    const fetchImpl = (async (input, init) => {
-      requests.push({ input, init })
-      return new Response(null, { status: 202 })
-    }) satisfies typeof fetch
-
-    const result = await sendEventLogEntriesToCloud([event], baseSettings, fetchImpl, "google-access-token")
-
-    expect(result).toBe(true)
-    expect(requests[0]?.init?.headers).toMatchObject({
-      authorization: "Bearer google-access-token"
-    })
-  })
-
-  it("does not send logs when the endpoint is blank, not HTTPS, or auth is missing", async () => {
+  it("does not send logs when auth or events are missing", async () => {
     const requests: Array<RequestInfo | URL> = []
     const fetchImpl = (async (input) => {
       requests.push(input)
       return new Response(null, { status: 202 })
     }) satisfies typeof fetch
+    const emptyEventsResult = await sendEventLogEntriesToCloud([], fetchImpl, "google-access-token")
+    const missingAuthResult = await sendEventLogEntriesToCloud([event], fetchImpl)
 
-    const blankEndpointResult = await sendEventLogEntriesToCloud(
-      [event],
-      {
-        ...baseSettings,
-        endpointUrl: ""
-      },
-      fetchImpl
-    )
-    const insecureResult = await sendEventLogEntriesToCloud(
-      [event],
-      {
-        ...baseSettings,
-        endpointUrl: "http://logs.example.com/autofill"
-      },
-      fetchImpl
-    )
-    const missingAuthResult = await sendEventLogEntriesToCloud(
-      [event],
-      {
-        ...baseSettings,
-        bearerToken: ""
-      },
-      fetchImpl
-    )
-
-    expect(blankEndpointResult).toBe(false)
-    expect(insecureResult).toBe(false)
+    expect(emptyEventsResult).toBe(false)
     expect(missingAuthResult).toBe(false)
     expect(requests).toHaveLength(0)
   })

@@ -127,9 +127,77 @@ function PopupApp() {
     return { nextSnapshot, nextTab }
   }
 
+  const pushSnapshotIfSignedIn = async (nextSnapshot: StorageSnapshot) => {
+    if (!nextSnapshot.googleAuthUser) {
+      return nextSnapshot
+    }
+
+    const googleAccessToken = await getGoogleAccessToken(false)
+    if (!googleAccessToken) {
+      setStatus("ローカル保存したで。Google同期は再ログインが必要やな")
+      return nextSnapshot
+    }
+
+    const remoteUpdatedAt = await pushSyncedSnapshot(googleAccessToken, nextSnapshot)
+
+    if (!remoteUpdatedAt) {
+      setStatus("ローカル保存したで。Google同期は失敗したわ")
+      return nextSnapshot
+    }
+
+    const syncedSnapshot = await saveAccountSyncState({
+      lastPushedAt: new Date().toISOString(),
+      lastRemoteUpdatedAt: remoteUpdatedAt
+    })
+    setSnapshot(syncedSnapshot)
+    return syncedSnapshot
+  }
+
+  const applyRemoteSnapshot = async (remoteSnapshot: Awaited<ReturnType<typeof pullSyncedSnapshot>>) => {
+    if (!remoteSnapshot) {
+      return null
+    }
+
+    const nextSnapshot = await applySyncedSnapshot(remoteSnapshot, remoteSnapshot.updatedAt)
+    setSnapshot(nextSnapshot)
+    setProfileForm(nextSnapshot.profile)
+    await notifyActiveTab(activeTab.id, { type: "SETTINGS_UPDATED" })
+    await notifyActiveTab(activeTab.id, { type: "PROFILE_UPDATED" })
+    return nextSnapshot
+  }
+
+  const pullRemoteSnapshotIfSignedIn = async (nextSnapshot: StorageSnapshot) => {
+    if (!nextSnapshot.googleAuthUser) {
+      return nextSnapshot
+    }
+
+    const googleAccessToken = await getGoogleAccessToken(false)
+    if (!googleAccessToken) {
+      setStatus("Google同期は再ログインが必要やな")
+      return nextSnapshot
+    }
+
+    const remoteSnapshot = await pullSyncedSnapshot(googleAccessToken)
+    if (!remoteSnapshot) {
+      return nextSnapshot
+    }
+
+    if (
+      nextSnapshot.accountSync.lastRemoteUpdatedAt &&
+      remoteSnapshot.updatedAt <= nextSnapshot.accountSync.lastRemoteUpdatedAt
+    ) {
+      return nextSnapshot
+    }
+
+    const syncedSnapshot = await applyRemoteSnapshot(remoteSnapshot)
+    setStatus("クラウドの最新設定を反映したで")
+    return syncedSnapshot ?? nextSnapshot
+  }
+
   useEffect(() => {
-    void refreshState().then(() => {
+    void refreshState().then(({ nextSnapshot }) => {
       setStatus("設定を確認できたで")
+      void pullRemoteSnapshotIfSignedIn(nextSnapshot)
     })
   }, [])
 
@@ -156,36 +224,6 @@ function PopupApp() {
       ...current,
       [key]: value
     }))
-  }
-
-  const pushSnapshotIfSignedIn = async (nextSnapshot: StorageSnapshot) => {
-    if (!nextSnapshot.googleAuthUser || !nextSnapshot.settings.cloudLogSync.endpointUrl.trim()) {
-      return nextSnapshot
-    }
-
-    const googleAccessToken = await getGoogleAccessToken(false)
-    if (!googleAccessToken) {
-      setStatus("ローカル保存したで。Google同期は再ログインが必要やな")
-      return nextSnapshot
-    }
-
-    const remoteUpdatedAt = await pushSyncedSnapshot(
-      nextSnapshot.settings.cloudLogSync.endpointUrl,
-      googleAccessToken,
-      nextSnapshot
-    )
-
-    if (!remoteUpdatedAt) {
-      setStatus("ローカル保存したで。Google同期は失敗したわ")
-      return nextSnapshot
-    }
-
-    const syncedSnapshot = await saveAccountSyncState({
-      lastPushedAt: new Date().toISOString(),
-      lastRemoteUpdatedAt: remoteUpdatedAt
-    })
-    setSnapshot(syncedSnapshot)
-    return syncedSnapshot
   }
 
   const handleSaveProfile = async () => {
@@ -249,18 +287,13 @@ function PopupApp() {
   }
 
   const handleGoogleLogin = async () => {
-    if (!snapshot.settings.cloudLogSync.endpointUrl.trim()) {
-      setStatus("Googleログインには同期先設定が必要やで")
-      return
-    }
-
     const googleAccessToken = await getGoogleAccessToken(true)
     if (!googleAccessToken) {
       setStatus("Googleログインがキャンセルされたか失敗したで")
       return
     }
 
-    const googleAuthUser = await fetchSignedInUser(snapshot.settings.cloudLogSync.endpointUrl, googleAccessToken)
+    const googleAuthUser = await fetchSignedInUser(googleAccessToken)
     if (!googleAuthUser) {
       setStatus("WorkerでGoogleログインを確認できへんかった")
       return
@@ -268,8 +301,16 @@ function PopupApp() {
 
     const signedInSnapshot = await saveGoogleAuthUser(googleAuthUser)
     setSnapshot(signedInSnapshot)
+    const remoteSnapshot = await pullSyncedSnapshot(googleAccessToken)
+
+    if (remoteSnapshot) {
+      await applyRemoteSnapshot(remoteSnapshot)
+      setStatus(`${googleAuthUser.email} のクラウド設定を反映したで`)
+      return
+    }
+
     await pushSnapshotIfSignedIn(signedInSnapshot)
-    setStatus(`${googleAuthUser.email} でログインしたで`)
+    setStatus(`${googleAuthUser.email} でログインしてクラウドへ初期保存したで`)
   }
 
   const handleGoogleLogout = async () => {
@@ -277,62 +318,6 @@ function PopupApp() {
     const nextSnapshot = await clearGoogleAuthUser()
     setSnapshot(nextSnapshot)
     setStatus("Googleログアウトしたで")
-  }
-
-  const handlePushSync = async () => {
-    if (!snapshot.settings.cloudLogSync.endpointUrl.trim()) {
-      setStatus("同期先設定が見つからへんで")
-      return
-    }
-
-    const googleAccessToken = await getGoogleAccessToken(true)
-    if (!googleAccessToken) {
-      setStatus("Googleログインが必要やで")
-      return
-    }
-
-    const remoteUpdatedAt = await pushSyncedSnapshot(
-      snapshot.settings.cloudLogSync.endpointUrl,
-      googleAccessToken,
-      snapshot
-    )
-    if (!remoteUpdatedAt) {
-      setStatus("クラウド保存に失敗したで")
-      return
-    }
-
-    const nextSnapshot = await saveAccountSyncState({
-      lastPushedAt: new Date().toISOString(),
-      lastRemoteUpdatedAt: remoteUpdatedAt
-    })
-    setSnapshot(nextSnapshot)
-    setStatus("設定をクラウドへ保存したで")
-  }
-
-  const handlePullSync = async () => {
-    if (!snapshot.settings.cloudLogSync.endpointUrl.trim()) {
-      setStatus("復元には同期先設定が必要やで")
-      return
-    }
-
-    const googleAccessToken = await getGoogleAccessToken(true)
-    if (!googleAccessToken) {
-      setStatus("Googleログインが必要やで")
-      return
-    }
-
-    const remoteSnapshot = await pullSyncedSnapshot(snapshot.settings.cloudLogSync.endpointUrl, googleAccessToken)
-    if (!remoteSnapshot) {
-      setStatus("復元できるクラウド設定がまだ無いで")
-      return
-    }
-
-    const nextSnapshot = await applySyncedSnapshot(remoteSnapshot, remoteSnapshot.updatedAt)
-    setSnapshot(nextSnapshot)
-    setProfileForm(nextSnapshot.profile)
-    await notifyActiveTab(activeTab.id, { type: "SETTINGS_UPDATED" })
-    await notifyActiveTab(activeTab.id, { type: "PROFILE_UPDATED" })
-    setStatus("クラウドから設定を復元したで")
   }
 
   return (
@@ -424,28 +409,10 @@ function PopupApp() {
             onClick={snapshot.googleAuthUser ? handleGoogleLogout : handleGoogleLogin}
             style={{
               ...buttonStyle,
+              gridColumn: "1 / -1",
               background: snapshot.googleAuthUser ? "#fecaca" : "#bbf7d0",
             }}>
             {snapshot.googleAuthUser ? "ログアウト" : "Googleでログイン"}
-          </button>
-          <button
-            type="button"
-            onClick={handlePushSync}
-            style={{
-              ...buttonStyle,
-              background: "#c4b5fd",
-            }}>
-            クラウドへ保存
-          </button>
-          <button
-            type="button"
-            onClick={handlePullSync}
-            style={{
-              ...buttonStyle,
-              background: "#fbcfe8",
-              gridColumn: "1 / -1"
-            }}>
-            クラウドから復元
           </button>
         </div>
       </section>

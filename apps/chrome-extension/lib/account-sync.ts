@@ -1,5 +1,6 @@
 import type { AutofillSettings, DomainPolicy, StoredProfile } from "@autofill-browser/autofill-core"
 
+import { buildCloudWorkerUrl } from "./cloud-config"
 import { normalizeGoogleAuthUser } from "./google-auth"
 import type { GoogleAuthUser, StorageSnapshot } from "./storage"
 
@@ -28,43 +29,14 @@ const jsonHeaders = {
   "content-type": "application/json"
 }
 
-export const buildWorkerUrl = (endpointUrl: string, pathname: "/auth/me" | "/sync/settings") => {
-  const trimmedEndpoint = endpointUrl.trim()
-
-  if (!trimmedEndpoint) {
-    return null
-  }
-
-  try {
-    const url = new URL(trimmedEndpoint)
-    if (url.protocol !== "https:") {
-      return null
-    }
-
-    const pathWithoutTrailingSlash = url.pathname.replace(/\/+$/u, "")
-    const basePath = pathWithoutTrailingSlash.endsWith("/logs")
-      ? pathWithoutTrailingSlash.slice(0, -"/logs".length)
-      : pathWithoutTrailingSlash
-    url.pathname = `${basePath}${pathname}` || pathname
-    url.search = ""
-    url.hash = ""
-    return url.toString()
-  } catch (_error) {
-    return null
-  }
-}
+export const buildWorkerUrl = (pathname: "/me" | "/me/settings") => buildCloudWorkerUrl(pathname)
 
 const authedJsonFetch = async <T>(
-  endpointUrl: string,
-  pathname: "/auth/me" | "/sync/settings",
+  pathname: "/me" | "/me/settings",
   googleAccessToken: string,
   init: RequestInit = {}
 ) => {
-  const url = buildWorkerUrl(endpointUrl, pathname)
-
-  if (!url) {
-    return null
-  }
+  const url = buildWorkerUrl(pathname)
 
   const response = await fetch(url, {
     ...init,
@@ -85,25 +57,18 @@ const authedJsonFetch = async <T>(
 export const buildSyncedSnapshot = (snapshot: StorageSnapshot): SyncedSnapshot => ({
   schemaVersion: 1,
   profile: snapshot.profile,
-  settings: {
-    ...snapshot.settings,
-    cloudLogSync: {
-      endpointUrl: "",
-      bearerToken: "",
-      includeFieldValues: snapshot.settings.cloudLogSync.includeFieldValues
-    }
-  },
+  settings: snapshot.settings,
   domainPolicies: snapshot.domainPolicies,
   updatedAt: new Date().toISOString()
 })
 
-export const fetchSignedInUser = async (endpointUrl: string, googleAccessToken: string) => {
-  const body = await authedJsonFetch<AuthMeResponse>(endpointUrl, "/auth/me", googleAccessToken)
+export const fetchSignedInUser = async (googleAccessToken: string) => {
+  const body = await authedJsonFetch<AuthMeResponse>("/me", googleAccessToken)
   return body?.user ? normalizeGoogleAuthUser(body.user) : null
 }
 
-export const pushSyncedSnapshot = async (endpointUrl: string, googleAccessToken: string, snapshot: StorageSnapshot) => {
-  const body = await authedJsonFetch<SyncSaveResponse>(endpointUrl, "/sync/settings", googleAccessToken, {
+export const pushSyncedSnapshot = async (googleAccessToken: string, snapshot: StorageSnapshot) => {
+  const body = await authedJsonFetch<SyncSaveResponse>("/me/settings", googleAccessToken, {
     method: "PUT",
     body: JSON.stringify(buildSyncedSnapshot(snapshot))
   })
@@ -115,7 +80,7 @@ export const pushSyncedSnapshot = async (endpointUrl: string, googleAccessToken:
   return body.updatedAt ?? new Date().toISOString()
 }
 
-export const pullSyncedSnapshot = async (endpointUrl: string, googleAccessToken: string) => {
-  const body = await authedJsonFetch<SyncSettingsResponse>(endpointUrl, "/sync/settings", googleAccessToken)
+export const pullSyncedSnapshot = async (googleAccessToken: string) => {
+  const body = await authedJsonFetch<SyncSettingsResponse>("/me/settings", googleAccessToken)
   return body?.snapshot ?? null
 }

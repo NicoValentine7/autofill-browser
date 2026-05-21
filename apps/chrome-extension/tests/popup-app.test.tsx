@@ -99,7 +99,7 @@ describe("PopupApp", () => {
     })
   })
 
-  it("signs in with Google and pushes the local snapshot", async () => {
+  it("signs in with Google and pushes the local snapshot when cloud is empty", async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = []
     vi.stubGlobal(
       "fetch",
@@ -107,7 +107,7 @@ describe("PopupApp", () => {
         const url = String(input)
         requests.push({ url, init })
 
-        if (url.endsWith("/auth/me")) {
+        if (url.endsWith("/me")) {
           return new Response(
             JSON.stringify({
               user: {
@@ -115,6 +115,20 @@ describe("PopupApp", () => {
                 email: "taro@example.com",
                 signedInAt: "2026-05-21T00:00:00.000Z"
               }
+            }),
+            {
+              status: 200,
+              headers: {
+                "content-type": "application/json"
+              }
+            }
+          )
+        }
+
+        if (url.endsWith("/me/settings") && init?.method !== "PUT") {
+          return new Response(
+            JSON.stringify({
+              snapshot: null
             }),
             {
               status: 200,
@@ -143,14 +157,6 @@ describe("PopupApp", () => {
       autofillProfile: {
         ...createEmptyProfile(),
         fullName: "山田 太郎"
-      },
-      autofillSettings: {
-        ...DEFAULT_AUTOFILL_SETTINGS,
-        cloudLogSync: {
-          endpointUrl: "https://logs.example.com/logs",
-          bearerToken: "",
-          includeFieldValues: true
-        }
       }
     })
     ;(globalThis as { chrome: typeof chrome }).chrome = mock.chromeMock as unknown as typeof chrome
@@ -165,8 +171,8 @@ describe("PopupApp", () => {
         email: "taro@example.com"
       })
     })
-    expect(requests.some((request) => request.url === "https://logs.example.com/auth/me")).toBe(true)
-    expect(requests.some((request) => request.url === "https://logs.example.com/sync/settings" && request.init?.method === "PUT")).toBe(
+    expect(requests.some((request) => request.url === "https://autofill-browser-log-worker.y-elucidator.workers.dev/me")).toBe(true)
+    expect(requests.some((request) => request.url === "https://autofill-browser-log-worker.y-elucidator.workers.dev/me/settings" && request.init?.method === "PUT")).toBe(
       true
     )
     expect(mock.storageData.autofillAccountSync).toMatchObject({
@@ -174,7 +180,7 @@ describe("PopupApp", () => {
     })
   })
 
-  it("restores synced profile and domain policies from Google cloud sync", async () => {
+  it("automatically restores a newer cloud snapshot for signed-in users", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
@@ -189,11 +195,7 @@ describe("PopupApp", () => {
               },
               settings: {
                 ...DEFAULT_AUTOFILL_SETTINGS,
-                cloudLogSync: {
-                  endpointUrl: "",
-                  bearerToken: "",
-                  includeFieldValues: false
-                }
+                enabled: false
               },
               domainPolicies: {
                 "example.com": "blacklist"
@@ -215,26 +217,19 @@ describe("PopupApp", () => {
         ...createEmptyProfile(),
         fullName: "ローカル 太郎"
       },
-      autofillSettings: {
-        ...DEFAULT_AUTOFILL_SETTINGS,
-        cloudLogSync: {
-          endpointUrl: "https://logs.example.com/logs",
-          bearerToken: "local-token",
-          includeFieldValues: true
-        }
-      },
+      autofillSettings: DEFAULT_AUTOFILL_SETTINGS,
       autofillGoogleAuthUser: {
         sub: "google-sub-1",
         email: "taro@example.com",
         signedInAt: "2026-05-21T00:00:00.000Z"
+      },
+      autofillAccountSync: {
+        lastRemoteUpdatedAt: "2026-05-21T00:00:01.000Z"
       }
     })
     ;(globalThis as { chrome: typeof chrome }).chrome = mock.chromeMock as unknown as typeof chrome
 
     render(createElement(PopupApp))
-
-    const user = userEvent.setup()
-    await user.click(await screen.findByRole("button", { name: "クラウドから復元" }))
 
     await waitFor(() => {
       expect(mock.storageData.autofillProfile).toMatchObject({
@@ -246,12 +241,10 @@ describe("PopupApp", () => {
       })
     })
     expect(mock.storageData.autofillSettings).toMatchObject({
-      cloudLogSync: {
-        endpointUrl: "https://logs.example.com/logs",
-        bearerToken: "local-token",
-        includeFieldValues: false
-      }
+      enabled: false
     })
+    expect(screen.queryByRole("button", { name: "クラウドへ保存" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "クラウドから復元" })).toBeNull()
   })
 
   it("renders only the latest 20 event log entries", async () => {

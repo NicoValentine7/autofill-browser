@@ -39,17 +39,10 @@ export type ExportedAutofillRules = {
 
 export type DomainPolicy = "default" | "whitelist" | "blacklist"
 
-export type CloudLogSyncSettings = {
-  endpointUrl: string
-  bearerToken: string
-  includeFieldValues: boolean
-}
-
 export type AutofillSettings = {
   enabled: boolean
   observeDynamicForms: boolean
   minMatchCount: number
-  cloudLogSync: CloudLogSyncSettings
 }
 
 export type SelectOptionDescriptor = {
@@ -117,12 +110,7 @@ export type EventLogEntry = {
 export const DEFAULT_AUTOFILL_SETTINGS: AutofillSettings = {
   enabled: true,
   observeDynamicForms: true,
-  minMatchCount: 1,
-  cloudLogSync: {
-    endpointUrl: "",
-    bearerToken: "",
-    includeFieldValues: true
-  }
+  minMatchCount: 1
 }
 
 export const createEmptyProfile = (): StoredProfile => ({
