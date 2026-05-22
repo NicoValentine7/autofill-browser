@@ -263,6 +263,130 @@ describe("autofill-engine", () => {
     })
   })
 
+  it("keeps learned payment card number, expiry and holder fields fillable", () => {
+    document.body.innerHTML = `
+      <label for="card-number">Card number</label>
+      <input id="card-number" name="card_number" autocomplete="cc-number" />
+      <label for="card-exp">Expiry</label>
+      <input id="card-exp" name="card_exp" autocomplete="cc-exp" />
+      <label for="card-name">Name on card</label>
+      <input id="card-name" name="card_name" autocomplete="cc-name" />
+    `
+    const cardNumber = document.getElementById("card-number") as HTMLInputElement
+    const cardExp = document.getElementById("card-exp") as HTMLInputElement
+    const cardName = document.getElementById("card-name") as HTMLInputElement
+    const cardNumberSignature = buildFieldSignature(buildFieldDescriptor(cardNumber))
+    const cardExpSignature = buildFieldSignature(buildFieldDescriptor(cardExp))
+    const cardNameSignature = buildFieldSignature(buildFieldDescriptor(cardName))
+    const snapshot = createSnapshot()
+    snapshot.profile = createEmptyProfile()
+    snapshot.fieldMemory = {
+      [`example.com::${cardNumberSignature}`]: {
+        hostname: "example.com",
+        fieldSignature: cardNumberSignature,
+        learnedLabel: "Card number",
+        lastAutofilledValue: "",
+        lastUserValue: "4111111111111111",
+        timesAutofilled: 0,
+        timesCorrected: 0,
+        timesLearned: 1,
+        updatedAt: new Date().toISOString()
+      },
+      [`example.com::${cardExpSignature}`]: {
+        hostname: "example.com",
+        fieldSignature: cardExpSignature,
+        learnedLabel: "Expiry",
+        lastAutofilledValue: "",
+        lastUserValue: "12/30",
+        timesAutofilled: 0,
+        timesCorrected: 0,
+        timesLearned: 1,
+        updatedAt: new Date().toISOString()
+      },
+      [`example.com::${cardNameSignature}`]: {
+        hostname: "example.com",
+        fieldSignature: cardNameSignature,
+        learnedLabel: "Name on card",
+        lastAutofilledValue: "",
+        lastUserValue: "HANAKO YAMADA",
+        timesAutofilled: 0,
+        timesCorrected: 0,
+        timesLearned: 1,
+        updatedAt: new Date().toISOString()
+      }
+    }
+
+    const values = valueById(snapshot)
+
+    expect(values).toMatchObject({
+      "card-number": "4111111111111111",
+      "card-exp": "12/30",
+      "card-name": "HANAKO YAMADA"
+    })
+  })
+
+  it("does not let card security code memory re-enable cvv fields", () => {
+    document.body.innerHTML = `
+      <label for="cvv">Security code</label>
+      <input id="cvv" name="card_cvv" autocomplete="cc-csc" />
+    `
+    const cvvField = document.getElementById("cvv") as HTMLInputElement
+    const fieldSignature = buildFieldSignature(buildFieldDescriptor(cvvField))
+    const snapshot = createSnapshot()
+    snapshot.fieldMemory = {
+      [`example.com::${fieldSignature}`]: {
+        hostname: "example.com",
+        fieldSignature,
+        lastAutofilledValue: "",
+        lastUserValue: "123",
+        timesAutofilled: 0,
+        timesCorrected: 0,
+        timesLearned: 1,
+        updatedAt: new Date().toISOString()
+      }
+    }
+
+    expect(collectAutofillCandidates(document, snapshot, window.location)).toEqual([])
+  })
+
+  it("does not let memory re-enable pin or secret answer fields", () => {
+    document.body.innerHTML = `
+      <label for="pin">PIN</label>
+      <input id="pin" name="pin" />
+      <label for="secret-word">Secret word</label>
+      <input id="secret-word" name="secret_word" />
+    `
+    const pinField = document.getElementById("pin") as HTMLInputElement
+    const secretField = document.getElementById("secret-word") as HTMLInputElement
+    const pinSignature = buildFieldSignature(buildFieldDescriptor(pinField))
+    const secretSignature = buildFieldSignature(buildFieldDescriptor(secretField))
+    const snapshot = createSnapshot()
+    snapshot.fieldMemory = {
+      [`example.com::${pinSignature}`]: {
+        hostname: "example.com",
+        fieldSignature: pinSignature,
+        lastAutofilledValue: "",
+        lastUserValue: "1234",
+        timesAutofilled: 0,
+        timesCorrected: 0,
+        timesLearned: 1,
+        updatedAt: new Date().toISOString()
+      },
+      [`example.com::${secretSignature}`]: {
+        hostname: "example.com",
+        fieldSignature: secretSignature,
+        lastAutofilledValue: "",
+        lastUserValue: "first pet",
+        timesAutofilled: 0,
+        timesCorrected: 0,
+        timesLearned: 1,
+        updatedAt: new Date().toISOString()
+      }
+    }
+
+    expect(collectAutofillCandidates(document, snapshot, window.location)).toEqual([])
+  })
+
   it("does not let custom field memory re-enable one-time-code fields", () => {
     document.body.innerHTML = `
       <label for="otp">Email OTP</label>

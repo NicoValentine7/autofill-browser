@@ -68,6 +68,15 @@ pnpm dev:extension
 
 本番相当の最終確認や別PC配布前だけ、`pnpm build:extension` を実行して `apps/chrome-extension/build/chrome-mv3-prod/` を使います。開発中の操作奪われ対策としては、dev版を読みっぱなしにするのが標準運用です。
 
+#### 機密フィールドの扱い
+
+自動入力は、通常プロフィール、学習済み任意フィールド、銀行/カード系フィールドを同じ候補収集層で扱います。ただし、機密度で保存・ログ出力の扱いを分けます。
+
+- 支店番号、口座番号、カード番号、有効期限、カード名義は学習・自動入力できます
+- 銀行/カード系の `field_learned_from_user` / `field_filled` / `field_corrected_by_user` イベントは、`previousValue` / `nextValue` を保存せず `values:redacted` だけ残します
+- CVC/CVV、PIN、パスワード、OTP、captcha、CSRF/token、合言葉/秘密の質問系は学習も自動入力もしません
+- CVC/CVV や認証用の秘密は保存対象にしません。カード決済や追加認証では毎回入力する前提です
+
 #### 拡張IDを固定する
 
 manifest `key` の公開鍵は `apps/chrome-extension/package.json` に入れてあるため、別PCでも clone して build するだけで同じ拡張IDになります。秘密鍵のコピーは不要です。

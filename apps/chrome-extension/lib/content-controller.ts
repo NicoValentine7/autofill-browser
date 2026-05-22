@@ -13,6 +13,7 @@ import {
   getFieldCurrentValue,
   type FieldElement
 } from "./autofill-engine"
+import { shouldRedactFieldEventValues, type FieldSecurityClassification } from "./field-security"
 import type { ExtensionMessage } from "./messages"
 import { commitStorageChanges, getStorageSnapshot, type NewEventLogEntry, type StorageSnapshot } from "./storage"
 
@@ -22,6 +23,7 @@ type CorrectionState = {
   url: string
   fieldSignature: string
   profileKey: FieldMemoryEntry["profileKey"]
+  securityClassification: FieldSecurityClassification
   autofilledValue: string
   runId: string
   lastPersistedValue: string
@@ -88,6 +90,21 @@ const promoteProfileValue = (
     [profileKey]: value
   }
 }
+
+const createEventValueFields = (
+  securityClassification: FieldSecurityClassification,
+  previousValue: string | undefined,
+  nextValue: string | undefined
+) =>
+  shouldRedactFieldEventValues(securityClassification)
+    ? {}
+    : {
+        previousValue,
+        nextValue
+      }
+
+const appendRedactionDetail = (detail: string, securityClassification: FieldSecurityClassification) =>
+  shouldRedactFieldEventValues(securityClassification) ? `${detail};values:redacted` : detail
 
 const setNativeFieldValue = (field: FieldElement, value: string) => {
   if (field instanceof HTMLInputElement) {
@@ -214,10 +231,10 @@ export const createAutofillController = ({
           url: state.url,
           fieldSignature: state.fieldSignature,
           profileKey: state.profileKey,
-          previousValue: state.autofilledValue,
-          nextValue: currentValue,
+          ...createEventValueFields(state.securityClassification, state.autofilledValue, currentValue),
           source: "storage-update",
-          runId: state.runId
+          runId: state.runId,
+          detail: appendRedactionDetail("correction", state.securityClassification)
         }
       ]
     })
@@ -293,6 +310,7 @@ export const createAutofillController = ({
     }
 
     const profileKey = learnableField.profileKey ?? existingEntry?.profileKey
+    const eventDetail = nextProfile ? `profile:${profileKey}` : profileKey ? `memory:${profileKey}` : "memory:custom"
     const updatedEntry: FieldMemoryEntry = {
       hostname: learnableField.descriptor.hostname,
       fieldSignature: learnableField.fieldSignature,
@@ -317,10 +335,13 @@ export const createAutofillController = ({
           url: learnableField.descriptor.url,
           fieldSignature: learnableField.fieldSignature,
           profileKey: profileKey ?? undefined,
-          previousValue: previousLearnedValue || undefined,
-          nextValue: currentValue,
+          ...createEventValueFields(
+            learnableField.securityClassification,
+            previousLearnedValue || undefined,
+            currentValue
+          ),
           source: "storage-update",
-          detail: nextProfile ? `profile:${profileKey}` : profileKey ? `memory:${profileKey}` : "memory:custom"
+          detail: appendRedactionDetail(eventDetail, learnableField.securityClassification)
         }
       ]
     })
@@ -451,10 +472,10 @@ export const createAutofillController = ({
         url: candidate.descriptor.url,
         fieldSignature: candidate.fieldSignature,
         profileKey: candidate.profileKey,
-        previousValue,
-        nextValue: candidate.rawValue,
+        ...createEventValueFields(candidate.securityClassification, previousValue, candidate.rawValue),
         source,
-        runId
+        runId,
+        detail: appendRedactionDetail("filled", candidate.securityClassification)
       })
 
       attachCorrectionTracking(candidate.field, {
@@ -462,6 +483,7 @@ export const createAutofillController = ({
         url: candidate.descriptor.url,
         fieldSignature: candidate.fieldSignature,
         profileKey: candidate.profileKey,
+        securityClassification: candidate.securityClassification,
         autofilledValue: candidate.rawValue,
         runId
       })

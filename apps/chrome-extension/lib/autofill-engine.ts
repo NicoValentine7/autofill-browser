@@ -10,6 +10,12 @@ import {
   type ProfileKey
 } from "@autofill-browser/autofill-core"
 
+import {
+  classifyFieldSecurity,
+  getDescriptorIdentity,
+  hasIdentityToken,
+  type FieldSecurityClassification
+} from "./field-security"
 import type { StorageSnapshot } from "./storage"
 
 export type FieldElement = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
@@ -20,6 +26,7 @@ export type AutofillCandidate = {
   fieldSignature: string
   profileKey?: ProfileKey
   fieldMemoryEntry?: FieldMemoryEntry
+  securityClassification: FieldSecurityClassification
   rawValue: string
   appliedValue: string
 }
@@ -43,43 +50,6 @@ const BLOCKED_INPUT_TYPES = new Set([
   "file"
 ])
 
-const SENSITIVE_FIELD_IDENTITY_TOKENS = [
-  "captcha",
-  "recaptcha",
-  "h captcha",
-  "g recaptcha",
-  "apbct",
-  "honeypot",
-  "csrf",
-  "xsrf",
-  "token",
-  "otp",
-  "one time code",
-  "2fa",
-  "mfa",
-  "verification code",
-  "passcode",
-  "password",
-  "passwd",
-  "username",
-  "user name",
-  "iam username"
-]
-
-const getDescriptorIdentity = (descriptor: FieldDescriptor) =>
-  normalizeText(
-    [
-      descriptor.name,
-      descriptor.id,
-      descriptor.autocomplete,
-      descriptor.placeholder,
-      descriptor.ariaLabel,
-      descriptor.labelText
-    ].join(" ")
-  )
-
-const hasIdentityToken = (identity: string, tokens: string[]) => tokens.some((token) => identity.includes(token))
-
 const hasHiddenAncestor = (field: FieldElement) => Boolean(field.closest("[hidden], [aria-hidden='true'], [inert]"))
 
 const hasHiddenComputedStyle = (field: FieldElement) => {
@@ -97,9 +67,6 @@ const hasHiddenComputedStyle = (field: FieldElement) => {
 
   return false
 }
-
-const isSensitiveAutofillTarget = (descriptor: FieldDescriptor, remoteTokens: string[] = []) =>
-  hasIdentityToken(getDescriptorIdentity(descriptor), [...SENSITIVE_FIELD_IDENTITY_TOKENS, ...remoteTokens])
 
 const compactDigits = (value: string) => value.replace(/\D+/g, "")
 
@@ -176,6 +143,7 @@ export type LearnableFieldDescriptor = {
   descriptor: FieldDescriptor
   fieldSignature: string
   profileKey: ProfileKey | null
+  securityClassification: FieldSecurityClassification
   fieldMemoryEntry?: FieldMemoryEntry
 }
 
@@ -189,7 +157,8 @@ export const describeLearnableField = (
   }
 
   const descriptor = buildFieldDescriptor(field, currentLocation)
-  if (isSensitiveAutofillTarget(descriptor, snapshot.remoteRules?.blockedIdentityTokens ?? [])) {
+  const securityClassification = classifyFieldSecurity(descriptor, snapshot.remoteRules?.blockedIdentityTokens ?? [])
+  if (securityClassification === "blocked") {
     return null
   }
 
@@ -200,6 +169,7 @@ export const describeLearnableField = (
     descriptor,
     fieldSignature,
     profileKey: resolveProfileKeyForDescriptor(descriptor, fieldMemoryEntry),
+    securityClassification,
     fieldMemoryEntry
   }
 }
@@ -487,7 +457,8 @@ export const collectAutofillCandidates = (
       descriptor: learnableField.descriptor,
       fieldSignature: learnableField.fieldSignature,
       fieldMemoryEntry: learnableField.fieldMemoryEntry,
-      profileKey: learnableField.profileKey ?? undefined
+      profileKey: learnableField.profileKey ?? undefined,
+      securityClassification: learnableField.securityClassification
     })
   }
 

@@ -295,9 +295,110 @@ describe("content-controller", () => {
 
     const snapshot = await getStorageSnapshot()
     const learnedValues = Object.values(snapshot.fieldMemory).map((entry) => entry.lastUserValue)
+    const learnedEvents = snapshot.eventLog.filter((entry: { type: string }) => entry.type === "field_learned_from_user")
 
     expect(learnedValues).toEqual(expect.arrayContaining(["235", "1234567"]))
-    expect(snapshot.eventLog.filter((entry: { type: string }) => entry.type === "field_learned_from_user")).toHaveLength(2)
+    expect(learnedEvents).toHaveLength(2)
+    expect(learnedEvents.every((entry) => entry.nextValue === undefined && entry.detail?.includes("values:redacted"))).toBe(true)
+  })
+
+  it("learns payment card fields without writing raw values to event logs", async () => {
+    const { chromeMock } = createChromeMock({
+      autofillProfile: emptyProfile
+    })
+    ;(globalThis as { chrome: typeof chrome }).chrome = chromeMock as unknown as typeof chrome
+    document.body.innerHTML = `
+      <label for="card-number">Card number</label>
+      <input id="card-number" name="card_number" autocomplete="cc-number" />
+      <label for="card-exp">Expiry</label>
+      <input id="card-exp" name="card_exp" autocomplete="cc-exp" />
+    `
+
+    const controller = createAutofillController({
+      chromeApi: chromeMock as unknown as typeof chrome,
+      debounceMs: 10
+    })
+
+    await controller.initialize()
+    await vi.runAllTimersAsync()
+    await flush()
+
+    const cardNumber = document.getElementById("card-number") as HTMLInputElement
+    cardNumber.value = "4111111111111111"
+    cardNumber.dispatchEvent(new Event("input", { bubbles: true }))
+    cardNumber.dispatchEvent(new Event("blur", { bubbles: true }))
+
+    const cardExp = document.getElementById("card-exp") as HTMLInputElement
+    cardExp.value = "12/30"
+    cardExp.dispatchEvent(new Event("input", { bubbles: true }))
+    cardExp.dispatchEvent(new Event("blur", { bubbles: true }))
+
+    await vi.runAllTimersAsync()
+    await flush()
+
+    const snapshot = await getStorageSnapshot()
+    const learnedValues = Object.values(snapshot.fieldMemory).map((entry) => entry.lastUserValue)
+    const learnedEvents = snapshot.eventLog.filter((entry: { type: string }) => entry.type === "field_learned_from_user")
+
+    expect(learnedValues).toEqual(expect.arrayContaining(["4111111111111111", "12/30"]))
+    expect(learnedEvents).toHaveLength(2)
+    expect(learnedEvents.every((entry) => entry.nextValue === undefined && entry.detail?.includes("values:redacted"))).toBe(true)
+
+    document.body.innerHTML = `
+      <label for="card-number">Card number</label>
+      <input id="card-number" name="card_number" autocomplete="cc-number" />
+      <label for="card-exp">Expiry</label>
+      <input id="card-exp" name="card_exp" autocomplete="cc-exp" />
+    `
+
+    const autofillController = createAutofillController({
+      chromeApi: chromeMock as unknown as typeof chrome,
+      debounceMs: 10
+    })
+
+    await autofillController.initialize()
+    await vi.runAllTimersAsync()
+    await flush()
+
+    expect((document.getElementById("card-number") as HTMLInputElement).value).toBe("4111111111111111")
+    expect((document.getElementById("card-exp") as HTMLInputElement).value).toBe("12/30")
+
+    const filledSnapshot = await getStorageSnapshot()
+    const filledEvents = filledSnapshot.eventLog.filter((entry: { type: string }) => entry.type === "field_filled")
+    expect(filledEvents).toHaveLength(2)
+    expect(filledEvents.every((entry) => entry.nextValue === undefined && entry.detail?.includes("values:redacted"))).toBe(true)
+  })
+
+  it("does not learn card security codes", async () => {
+    const { chromeMock } = createChromeMock({
+      autofillProfile: emptyProfile
+    })
+    ;(globalThis as { chrome: typeof chrome }).chrome = chromeMock as unknown as typeof chrome
+    document.body.innerHTML = `
+      <label for="cvv">Security code</label>
+      <input id="cvv" name="card_cvv" autocomplete="cc-csc" />
+    `
+
+    const controller = createAutofillController({
+      chromeApi: chromeMock as unknown as typeof chrome,
+      debounceMs: 10
+    })
+
+    await controller.initialize()
+    await vi.runAllTimersAsync()
+    await flush()
+
+    const cvv = document.getElementById("cvv") as HTMLInputElement
+    cvv.value = "123"
+    cvv.dispatchEvent(new Event("input", { bubbles: true }))
+    cvv.dispatchEvent(new Event("blur", { bubbles: true }))
+
+    await vi.runAllTimersAsync()
+    await flush()
+
+    const snapshot = await getStorageSnapshot()
+    expect(snapshot.fieldMemory).toEqual({})
+    expect(snapshot.eventLog.some((entry: { type: string }) => entry.type === "field_learned_from_user")).toBe(false)
   })
 
   it("does not learn dangerous manual inputs", async () => {
@@ -308,6 +409,11 @@ describe("content-controller", () => {
     document.body.innerHTML = `
       <input id="email-otp" name="email_otp" autocomplete="one-time-code" />
       <textarea id="recaptcha" name="g-recaptcha-response"></textarea>
+      <input id="password" name="password" type="password" />
+      <label for="pin">PIN</label>
+      <input id="pin" name="pin" />
+      <label for="secret-word">Secret word</label>
+      <input id="secret-word" name="secret_word" />
     `
 
     const controller = createAutofillController({
@@ -328,6 +434,21 @@ describe("content-controller", () => {
     captcha.value = "captcha-token"
     captcha.dispatchEvent(new Event("input", { bubbles: true }))
     captcha.dispatchEvent(new Event("blur", { bubbles: true }))
+
+    const password = document.getElementById("password") as HTMLInputElement
+    password.value = "pa55word"
+    password.dispatchEvent(new Event("input", { bubbles: true }))
+    password.dispatchEvent(new Event("blur", { bubbles: true }))
+
+    const pin = document.getElementById("pin") as HTMLInputElement
+    pin.value = "1234"
+    pin.dispatchEvent(new Event("input", { bubbles: true }))
+    pin.dispatchEvent(new Event("blur", { bubbles: true }))
+
+    const secretWord = document.getElementById("secret-word") as HTMLInputElement
+    secretWord.value = "first pet"
+    secretWord.dispatchEvent(new Event("input", { bubbles: true }))
+    secretWord.dispatchEvent(new Event("blur", { bubbles: true }))
 
     await vi.runAllTimersAsync()
     await flush()
