@@ -1,7 +1,7 @@
 {
   "name": "autofill-browser",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "packageManager": "pnpm@10.8.1",
   "scripts": {
     "dev:extension": "pnpm --filter chrome-extension dev",

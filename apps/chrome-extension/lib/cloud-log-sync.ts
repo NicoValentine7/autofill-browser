@@ -107,7 +107,7 @@ export const buildProductOperationEvents = (
         received_at: receivedAt,
         product: "autofill-browser",
         environment: "prod",
-        app_version: options.appVersion ?? "0.1.0",
+        app_version: options.appVersion ?? "0.1.1",
         platform: "chrome-extension",
         installation_id: options.installationId?.trim() || null,
         user_id_hash: null,
