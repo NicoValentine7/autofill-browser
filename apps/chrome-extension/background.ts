@@ -4,7 +4,12 @@ import type { ExtensionMessage } from "~lib/messages"
 import type { EventLogEntry } from "@autofill-browser/autofill-core"
 
 const PENDING_CLOUD_LOG_EVENTS_KEY = "autofillPendingCloudLogEvents"
+const ACCOUNT_SYNC_KEY = "autofillAccountSync"
 const PENDING_CLOUD_LOG_LIMIT = 200
+
+type AccountSyncState = {
+  deviceId?: string
+}
 
 const getPendingCloudLogEvents = async () => {
   const stored = await chrome.storage.local.get(PENDING_CLOUD_LOG_EVENTS_KEY)
@@ -17,8 +22,15 @@ const savePendingCloudLogEvents = async (events: EventLogEntry[]) => {
   })
 }
 
+const getInstallationId = async () => {
+  const stored = await chrome.storage.local.get(ACCOUNT_SYNC_KEY)
+  const accountSync = stored[ACCOUNT_SYNC_KEY] as AccountSyncState | undefined
+  return accountSync?.deviceId?.trim() || null
+}
+
 const flushCloudLogEvents = async (events: EventLogEntry[] = []) => {
   const googleAccessToken = await getGoogleAccessToken(false)
+  const installationId = await getInstallationId()
   const pendingEvents = await getPendingCloudLogEvents()
   const eventsToSend = [...pendingEvents, ...events].slice(-PENDING_CLOUD_LOG_LIMIT)
 
@@ -31,7 +43,9 @@ const flushCloudLogEvents = async (events: EventLogEntry[] = []) => {
     return
   }
 
-  const sent = await sendEventLogEntriesToCloud(eventsToSend, fetch, googleAccessToken)
+  const sent = await sendEventLogEntriesToCloud(eventsToSend, fetch, googleAccessToken, {
+    installationId
+  })
   await savePendingCloudLogEvents(sent ? [] : eventsToSend)
 }
 

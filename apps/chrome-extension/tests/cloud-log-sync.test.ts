@@ -1,7 +1,7 @@
 import type { EventLogEntry } from "@autofill-browser/autofill-core"
 import { describe, expect, it } from "vitest"
 
-import { buildCloudLogPayload, sendEventLogEntriesToCloud } from "../lib/cloud-log-sync"
+import { buildCloudLogPayload, buildProductOperationEvents, sendEventLogEntriesToCloud } from "../lib/cloud-log-sync"
 
 const event: EventLogEntry = {
   id: "event-1",
@@ -18,12 +18,24 @@ const event: EventLogEntry = {
 }
 
 describe("cloud-log-sync", () => {
-  it("includes field values and redacts URL secrets by default", () => {
+  it("redacts field values and URL secrets by default", () => {
     const payload = buildCloudLogPayload([event])
 
     expect(payload.events[0]).toMatchObject({
       id: "event-1",
-      url: "https://example.com/form",
+      url: "https://example.com/form"
+    })
+    expect(payload.events[0]?.previousValue).toBeUndefined()
+    expect(payload.events[0]?.nextValue).toBeUndefined()
+  })
+
+  it("can include field values when explicitly enabled", () => {
+    const payload = buildCloudLogPayload([event], {
+      includeFieldValues: true
+    })
+
+    expect(payload.events[0]).toMatchObject({
+      id: "event-1",
       previousValue: "",
       nextValue: "taro@example.com"
     })
@@ -54,6 +66,60 @@ describe("cloud-log-sync", () => {
       authorization: "Bearer google-access-token",
       "content-type": "application/json"
     })
+  })
+
+  it("builds safe product operation events without form values or raw URLs", () => {
+    const payload = buildProductOperationEvents([event], {
+      installationId: "device-1"
+    })
+
+    expect(payload).toHaveLength(1)
+    expect(payload[0]).toMatchObject({
+      event_id: "event-1:product-operation",
+      product: "autofill-browser",
+      installation_id: "device-1",
+      session_id: "run-1",
+      event_name: "autofill.applied",
+      payload: {
+        field_count: 1,
+        field_category_counts: {
+          email: 1
+        },
+        form_category: "unknown",
+        browser: "chrome",
+        extension_context: "popup"
+      }
+    })
+    expect(JSON.stringify(payload)).not.toContain("taro@example.com")
+    expect(JSON.stringify(payload)).not.toContain("https://example.com/form")
+  })
+
+  it("posts safe product operation events to the configured endpoint after legacy logs", async () => {
+    const requests: Array<{ input: RequestInfo | URL; init?: RequestInit }> = []
+    const fetchImpl = (async (input, init) => {
+      requests.push({ input, init })
+      return new Response(null, { status: 202 })
+    }) satisfies typeof fetch
+
+    const result = await sendEventLogEntriesToCloud([event], fetchImpl, "google-access-token", {
+      endpointUrl: "https://product-operation-logs.example.com/events",
+      installationId: "device-1"
+    })
+
+    expect(result).toBe(true)
+    expect(requests.map((request) => request.input)).toEqual([
+      "https://autofill-browser-log-worker.y-elucidator.workers.dev/me/events",
+      "https://product-operation-logs.example.com/events"
+    ])
+
+    const productEventBody = JSON.parse(String(requests[1]?.init?.body))
+    expect(productEventBody.event_name).toBe("autofill.applied")
+    expect(requests[1]?.init?.headers).toMatchObject({
+      authorization: "Bearer google-access-token",
+      "content-type": "application/json"
+    })
+    expect(JSON.stringify(productEventBody)).not.toContain("taro@example.com")
+    expect(JSON.stringify(productEventBody)).not.toContain("token=secret")
   })
 
   it("does not send logs when auth or events are missing", async () => {
