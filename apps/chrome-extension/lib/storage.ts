@@ -16,6 +16,7 @@ import { sendCloudLogSyncMessage } from "./messages"
 import {
   createSecureVaultKey,
   decryptSecureVaultValues,
+  ensureSecureVaultKeyCheck,
   normalizeSecureVaultRecoveryPackage,
   normalizeSecureVaultKey,
   normalizeSecureVaultState,
@@ -39,6 +40,8 @@ const STORAGE_KEYS = {
   accountSync: "autofillAccountSync",
   remoteRules: "autofillRemoteRules"
 } as const
+
+const PERSISTED_STORAGE_KEYS = Object.values(STORAGE_KEYS)
 
 const EVENT_LOG_LIMIT = 1000
 
@@ -256,15 +259,40 @@ const sortAndTrimEvents = (entries: EventLogEntry[]) =>
     .sort((left, right) => right.timestamp.localeCompare(left.timestamp))
     .slice(0, EVENT_LOG_LIMIT)
 
+const getSessionStorageArea = () => chrome.storage.session
+
+const getSessionSecureVaultKey = async () => {
+  const stored = await getSessionStorageArea().get(STORAGE_KEYS.secureVaultKey)
+  return normalizeSecureVaultKey(stored[STORAGE_KEYS.secureVaultKey] as Partial<SecureVaultKey> | undefined)
+}
+
+const saveSessionSecureVaultKey = async (secureVaultKey?: SecureVaultKey | null) => {
+  await getSessionStorageArea().set({
+    [STORAGE_KEYS.secureVaultKey]: secureVaultKey ?? null
+  })
+}
+
+const clearPersistedSecureVaultKey = async () => {
+  await chrome.storage.local.set({
+    [STORAGE_KEYS.secureVaultKey]: null
+  })
+}
+
 export const getFieldMemoryKey = (hostname: string, fieldSignature: string) => buildFieldMemoryKey(hostname, fieldSignature)
 
 export const getStorageSnapshot = async (): Promise<StorageSnapshot> => {
-  const stored = await chrome.storage.local.get(Object.values(STORAGE_KEYS))
+  const stored = await chrome.storage.local.get(PERSISTED_STORAGE_KEYS)
   const rawProfile = stored[STORAGE_KEYS.profile] as Partial<StoredProfile> | undefined
   const normalizedStoredProfile = normalizeProfile(rawProfile)
   const shouldSeedDefaultProfile = !rawProfile || !Object.values(normalizedStoredProfile).some((value) => value.trim().length > 0)
   const secureVault = normalizeSecureVaultState(stored[STORAGE_KEYS.secureVault] as Partial<SecureVaultState> | undefined)
-  const secureVaultKey = normalizeSecureVaultKey(stored[STORAGE_KEYS.secureVaultKey] as Partial<SecureVaultKey> | undefined)
+  const persistedSecureVaultKey = normalizeSecureVaultKey(stored[STORAGE_KEYS.secureVaultKey] as Partial<SecureVaultKey> | undefined)
+  let secureVaultKey = await getSessionSecureVaultKey()
+  if (!secureVaultKey && persistedSecureVaultKey) {
+    secureVaultKey = persistedSecureVaultKey
+    await saveSessionSecureVaultKey(secureVaultKey)
+    await clearPersistedSecureVaultKey()
+  }
   const secureVaultRecovery = normalizeSecureVaultRecoveryPackage(
     stored[STORAGE_KEYS.secureVaultRecovery] as Partial<SecureVaultRecoveryPackage> | undefined
   )
@@ -327,6 +355,13 @@ export const commitStorageChanges = async (update: StorageUpdate): Promise<Stora
     }
   }
 
+  if (
+    next.secureVaultKey &&
+    (hasSecureVaultUpdate || hasSecureVaultKeyUpdate || (update.secureVaultUpdates && update.secureVaultUpdates.length > 0))
+  ) {
+    next.secureVault = await ensureSecureVaultKeyCheck(next.secureVault, next.secureVaultKey)
+  }
+
   if (hasSecureVaultUpdate || hasSecureVaultKeyUpdate || (update.secureVaultUpdates && update.secureVaultUpdates.length > 0)) {
     next.secureVaultValues = await decryptSecureVaultValues(next.secureVault, next.secureVaultKey)
   }
@@ -338,13 +373,17 @@ export const commitStorageChanges = async (update: StorageUpdate): Promise<Stora
     next.eventLog = sortAndTrimEvents([...normalizedEventEntries, ...current.eventLog])
   }
 
+  if (hasSecureVaultKeyUpdate || (update.secureVaultUpdates && update.secureVaultUpdates.length > 0)) {
+    await saveSessionSecureVaultKey(next.secureVaultKey)
+  }
+
   await chrome.storage.local.set({
     [STORAGE_KEYS.profile]: next.profile,
     [STORAGE_KEYS.settings]: next.settings,
     [STORAGE_KEYS.domainPolicies]: next.domainPolicies,
     [STORAGE_KEYS.fieldMemory]: next.fieldMemory,
     [STORAGE_KEYS.secureVault]: next.secureVault,
-    [STORAGE_KEYS.secureVaultKey]: next.secureVaultKey ?? null,
+    [STORAGE_KEYS.secureVaultKey]: null,
     [STORAGE_KEYS.secureVaultRecovery]: next.secureVaultRecovery ?? null,
     [STORAGE_KEYS.eventLog]: next.eventLog,
     [STORAGE_KEYS.googleAuthUser]: next.googleAuthUser ?? null,

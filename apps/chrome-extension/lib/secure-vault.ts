@@ -20,6 +20,7 @@ export type SecureVaultEntry = {
   hostname: string
   fieldSignature: string
   kind: SecureVaultEntryKind
+  keyId?: string
   label?: string
   encryptedValue: SecureVaultEncryptedValue
   timesAutofilled: number
@@ -29,9 +30,18 @@ export type SecureVaultEntry = {
   updatedAt: string
 }
 
+export type SecureVaultKeyCheck = {
+  keyId: string
+  encryptedValue: SecureVaultEncryptedValue
+  createdAt: string
+}
+
 export type SecureVaultState = {
   schemaVersion: 1
   encryptionVersion: 1
+  vaultId: string
+  activeKeyId?: string
+  keyCheck?: SecureVaultKeyCheck
   entries: Record<string, SecureVaultEntry>
 }
 
@@ -47,6 +57,7 @@ export type SecureVaultRecoveryPackage = {
   schemaVersion: 1
   keyId: string
   algorithm: "PBKDF2-SHA256/AES-GCM"
+  vaultId?: string
   iterations: number
   salt: string
   iv: string
@@ -69,11 +80,13 @@ const RECOVERY_KEY_ITERATIONS = 600_000
 const MIN_RECOVERY_KEY_ITERATIONS = 250_000
 const MAX_RECOVERY_KEY_ITERATIONS = 5_000_000
 const RECOVERY_PHRASE_BYTES = 32
+const SECURE_VAULT_KEY_CHECK_VALUE = "secure-vault-key-check:v1"
 export const MIN_VAULT_RECOVERY_PASSPHRASE_LENGTH = 24
 
 export const createEmptySecureVault = (): SecureVaultState => ({
   schemaVersion: 1,
   encryptionVersion: 1,
+  vaultId: createSecureVaultId(),
   entries: {}
 })
 
@@ -141,20 +154,29 @@ const normalizeRecoveryPassphrase = (passphrase: string) => passphrase.trim()
 const encodeRecoveryAdditionalData = (
   recoveryPackage: Pick<
     SecureVaultRecoveryPackage,
-    "schemaVersion" | "keyId" | "algorithm" | "iterations" | "salt" | "iv" | "createdAt"
-  >
-) =>
-  new TextEncoder().encode(
-    JSON.stringify([
-      recoveryPackage.schemaVersion,
-      recoveryPackage.keyId,
-      recoveryPackage.algorithm,
-      recoveryPackage.iterations,
-      recoveryPackage.salt,
-      recoveryPackage.iv,
-      recoveryPackage.createdAt
-    ])
-  )
+    "schemaVersion" | "keyId" | "algorithm" | "iterations" | "salt" | "iv" | "createdAt" | "vaultId"
+  >,
+  includeVaultId = Boolean(recoveryPackage.vaultId)
+) => {
+  const values = [
+    recoveryPackage.schemaVersion,
+    recoveryPackage.keyId,
+    recoveryPackage.algorithm,
+    recoveryPackage.iterations,
+    recoveryPackage.salt,
+    recoveryPackage.iv,
+    recoveryPackage.createdAt
+  ]
+
+  if (includeVaultId) {
+    values.push(recoveryPackage.vaultId ?? "")
+  }
+
+  return new TextEncoder().encode(JSON.stringify(values))
+}
+
+const createSecureVaultId = () =>
+  typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `vault-${Date.now()}-${Math.random()}`
 
 export const createSecureVaultKey = (): SecureVaultKey => {
   const rawKey = new Uint8Array(32)
@@ -215,6 +237,7 @@ export const normalizeSecureVaultRecoveryPackage = (
     schemaVersion: 1,
     keyId: recoveryPackage.keyId,
     algorithm: "PBKDF2-SHA256/AES-GCM",
+    ...(recoveryPackage.vaultId?.trim() ? { vaultId: recoveryPackage.vaultId.trim() } : {}),
     iterations: Math.floor(recoveryPackage.iterations),
     salt: recoveryPackage.salt,
     iv: recoveryPackage.iv,
@@ -233,6 +256,19 @@ const normalizeEncryptedValue = (value?: Partial<SecureVaultEncryptedValue>): Se
     algorithm: "AES-GCM",
     iv: value.iv,
     ciphertext: value.ciphertext
+  }
+}
+
+const normalizeSecureVaultKeyCheck = (value?: Partial<SecureVaultKeyCheck> | null): SecureVaultKeyCheck | undefined => {
+  const encryptedValue = normalizeEncryptedValue(value?.encryptedValue)
+  if (!value?.keyId || !value.createdAt || !encryptedValue) {
+    return undefined
+  }
+
+  return {
+    keyId: value.keyId,
+    encryptedValue,
+    createdAt: value.createdAt
   }
 }
 
@@ -260,6 +296,7 @@ export const normalizeSecureVaultState = (vault?: Partial<SecureVaultState> | nu
       hostname: entry.hostname,
       fieldSignature: entry.fieldSignature,
       kind: normalizeEntryKind(entry.kind),
+      keyId: entry.keyId?.trim() || undefined,
       label: entry.label?.trim() || undefined,
       encryptedValue,
       timesAutofilled: Math.max(0, Math.floor(entry.timesAutofilled ?? 0)),
@@ -273,6 +310,9 @@ export const normalizeSecureVaultState = (vault?: Partial<SecureVaultState> | nu
   return {
     schemaVersion: 1,
     encryptionVersion: 1,
+    vaultId: vault?.vaultId?.trim() || createSecureVaultId(),
+    activeKeyId: vault?.activeKeyId?.trim() || normalizeSecureVaultKeyCheck(vault?.keyCheck)?.keyId,
+    keyCheck: normalizeSecureVaultKeyCheck(vault?.keyCheck),
     entries
   }
 }
@@ -347,7 +387,8 @@ export const classifySecureVaultKind = (
 
 export const createSecureVaultRecoveryPackage = async (
   key: SecureVaultKey,
-  passphrase: string
+  passphrase: string,
+  vaultId?: string
 ): Promise<SecureVaultRecoveryPackage | null> => {
   const normalizedPassphrase = normalizeRecoveryPassphrase(passphrase)
   if (normalizedPassphrase.length < MIN_VAULT_RECOVERY_PASSPHRASE_LENGTH) {
@@ -363,6 +404,7 @@ export const createSecureVaultRecoveryPackage = async (
     schemaVersion: 1 as const,
     keyId: key.keyId,
     algorithm: "PBKDF2-SHA256/AES-GCM" as const,
+    ...(vaultId?.trim() ? { vaultId: vaultId.trim() } : {}),
     iterations: RECOVERY_KEY_ITERATIONS,
     salt: bytesToBase64(salt),
     iv: bytesToBase64(iv),
@@ -387,10 +429,19 @@ export const createSecureVaultRecoveryPackage = async (
 
 export const recoverSecureVaultKey = async (
   recoveryPackage: SecureVaultRecoveryPackage,
-  passphrase: string
+  passphrase: string,
+  expectedVault?: SecureVaultState
 ): Promise<SecureVaultKey | null> => {
   const normalizedRecoveryPackage = normalizeSecureVaultRecoveryPackage(recoveryPackage)
   if (!normalizedRecoveryPackage) {
+    return null
+  }
+
+  if (
+    expectedVault?.vaultId &&
+    normalizedRecoveryPackage.vaultId &&
+    expectedVault.vaultId !== normalizedRecoveryPackage.vaultId
+  ) {
     return null
   }
 
@@ -416,7 +467,15 @@ export const recoverSecureVaultKey = async (
     )
     const parsed = JSON.parse(new TextDecoder().decode(plaintext)) as Partial<SecureVaultKey>
     const recoveredKey = normalizeSecureVaultKey(parsed)
-    return recoveredKey?.keyId === normalizedRecoveryPackage.keyId ? recoveredKey : null
+    if (recoveredKey?.keyId !== normalizedRecoveryPackage.keyId) {
+      return null
+    }
+
+    if (expectedVault?.keyCheck && !(await validateSecureVaultKey(expectedVault, recoveredKey))) {
+      return null
+    }
+
+    return recoveredKey
   } catch (_error) {
     return null
   }
@@ -453,8 +512,48 @@ export const decryptSecureValue = async (
   }
 }
 
-export const decryptSecureVaultValues = async (vault: SecureVaultState, key?: SecureVaultKey) => {
+const buildSecureVaultKeyCheckPlaintext = (vaultId: string, keyId: string) => `${SECURE_VAULT_KEY_CHECK_VALUE}:${vaultId}:${keyId}`
+
+export const validateSecureVaultKey = async (vault: SecureVaultState, key?: SecureVaultKey) => {
   if (!key) {
+    return false
+  }
+
+  if (!vault.keyCheck) {
+    return true
+  }
+
+  if (vault.keyCheck.keyId !== key.keyId) {
+    return false
+  }
+
+  return (await decryptSecureValue(vault.keyCheck.encryptedValue, key)) === buildSecureVaultKeyCheckPlaintext(vault.vaultId, key.keyId)
+}
+
+export const ensureSecureVaultKeyCheck = async (vault: SecureVaultState, key: SecureVaultKey): Promise<SecureVaultState> => {
+  const normalizedVault = normalizeSecureVaultState(vault)
+  if (normalizedVault.keyCheck && !(await validateSecureVaultKey(normalizedVault, key))) {
+    return normalizedVault
+  }
+
+  const keyCheck =
+    normalizedVault.keyCheck?.keyId === key.keyId
+      ? normalizedVault.keyCheck
+      : {
+          keyId: key.keyId,
+          encryptedValue: await encryptSecureValue(buildSecureVaultKeyCheckPlaintext(normalizedVault.vaultId, key.keyId), key),
+          createdAt: new Date().toISOString()
+        }
+
+  return {
+    ...normalizedVault,
+    activeKeyId: key.keyId,
+    keyCheck
+  }
+}
+
+export const decryptSecureVaultValues = async (vault: SecureVaultState, key?: SecureVaultKey) => {
+  if (!key || !(await validateSecureVaultKey(vault, key))) {
     return {}
   }
 
@@ -473,18 +572,24 @@ export const upsertSecureVaultValue = async (
   key: SecureVaultKey,
   update: SecureVaultValueUpdate
 ): Promise<SecureVaultState> => {
+  const checkedVault = await ensureSecureVaultKeyCheck(vault, key)
+  if (checkedVault.keyCheck && !(await validateSecureVaultKey(checkedVault, key))) {
+    return checkedVault
+  }
+
   const entryKey = getSecureVaultEntryKey(update.hostname, update.fieldSignature)
-  const existingEntry = vault.entries[entryKey]
+  const existingEntry = checkedVault.entries[entryKey]
   const now = new Date().toISOString()
 
   return {
-    ...vault,
+    ...checkedVault,
     entries: {
-      ...vault.entries,
+      ...checkedVault.entries,
       [entryKey]: {
         hostname: update.hostname,
         fieldSignature: update.fieldSignature,
         kind: update.kind,
+        keyId: key.keyId,
         label: update.label?.trim() || existingEntry?.label,
         encryptedValue: await encryptSecureValue(update.value, key),
         timesAutofilled: (existingEntry?.timesAutofilled ?? 0) + (update.incrementAutofilled ? 1 : 0),

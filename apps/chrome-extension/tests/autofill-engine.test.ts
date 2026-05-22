@@ -152,6 +152,12 @@ describe("autofill-engine", () => {
       <input id="email-otp" name="email_otp" autocomplete="one-time-code" />
       <label for="verification">Verification code</label>
       <input id="verification" name="verification_code" />
+      <label for="auth-code">Authentication code</label>
+      <input id="auth-code" name="auth_code" />
+      <label for="totp">TOTP</label>
+      <input id="totp" name="totp" />
+      <label for="sms-code">SMS code</label>
+      <input id="sms-code" name="sms_code" />
       <label for="email">Email</label>
       <input id="email" name="email" />
     `
@@ -166,15 +172,22 @@ describe("autofill-engine", () => {
     expect(values).not.toHaveProperty("apbct")
     expect(values).not.toHaveProperty("email-otp")
     expect(values).not.toHaveProperty("verification")
+    expect(values).not.toHaveProperty("auth-code")
+    expect(values).not.toHaveProperty("totp")
+    expect(values).not.toHaveProperty("sms-code")
   })
 
   it("does not let field memory re-enable sensitive username fields", () => {
     document.body.innerHTML = `
       <label for="iam-username">IAM username</label>
       <input id="iam-username" name="username" />
+      <label for="login-user-id">ログインID</label>
+      <input id="login-user-id" name="login_user_id" />
     `
     const usernameField = document.getElementById("iam-username") as HTMLInputElement
+    const loginUserIdField = document.getElementById("login-user-id") as HTMLInputElement
     const fieldSignature = buildFieldSignature(buildFieldDescriptor(usernameField))
+    const loginUserIdSignature = buildFieldSignature(buildFieldDescriptor(loginUserIdField))
     const snapshot = createSnapshot()
     snapshot.fieldMemory = {
       [`example.com::${fieldSignature}`]: {
@@ -183,6 +196,16 @@ describe("autofill-engine", () => {
         profileKey: "fullName",
         lastAutofilledValue: "old-user",
         lastUserValue: "learned-user",
+        timesAutofilled: 2,
+        timesCorrected: 1,
+        updatedAt: new Date().toISOString()
+      },
+      [`example.com::${loginUserIdSignature}`]: {
+        hostname: "example.com",
+        fieldSignature: loginUserIdSignature,
+        profileKey: "fullName",
+        lastAutofilledValue: "old-user-id",
+        lastUserValue: "learned-user-id",
         timesAutofilled: 2,
         timesCorrected: 1,
         updatedAt: new Date().toISOString()
@@ -298,7 +321,7 @@ describe("autofill-engine", () => {
     })
   })
 
-  it("allows card security code candidates only as secure-vault confirmation fields", () => {
+  it("does not persist or fill card security code candidates", () => {
     document.body.innerHTML = `
       <label for="cvv">Security code</label>
       <input id="cvv" name="card_cvv" autocomplete="cc-csc" />
@@ -319,12 +342,31 @@ describe("autofill-engine", () => {
       }
     }
 
-    const [candidate] = collectAutofillCandidates(document, snapshot, window.location)
-    expect(candidate).toMatchObject({
-      rawValue: "123",
-      securityClassification: "secure-vault-confirm",
-      secureVaultKind: "card-security-code"
-    })
+    expect(collectAutofillCandidates(document, snapshot, window.location)).toEqual([])
+  })
+
+  it("blocks generic security code fields without card context", () => {
+    document.body.innerHTML = `
+      <label for="security-code">Security code</label>
+      <input id="security-code" name="security_code" />
+    `
+    const securityCodeField = document.getElementById("security-code") as HTMLInputElement
+    const fieldSignature = buildFieldSignature(buildFieldDescriptor(securityCodeField))
+    const snapshot = createSnapshot()
+    snapshot.fieldMemory = {
+      [`example.com::${fieldSignature}`]: {
+        hostname: "example.com",
+        fieldSignature,
+        lastAutofilledValue: "",
+        lastUserValue: "123",
+        timesAutofilled: 0,
+        timesCorrected: 0,
+        timesLearned: 1,
+        updatedAt: new Date().toISOString()
+      }
+    }
+
+    expect(collectAutofillCandidates(document, snapshot, window.location)).toEqual([])
   })
 
   it("does not let memory re-enable pin or secret answer fields", () => {

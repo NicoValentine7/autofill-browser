@@ -20,7 +20,7 @@ import {
   type FieldSecurityClassification
 } from "./field-security"
 import type { ExtensionMessage } from "./messages"
-import { type SecureVaultValueUpdate } from "./secure-vault"
+import { validateSecureVaultKey, type SecureVaultValueUpdate } from "./secure-vault"
 import { commitStorageChanges, getStorageSnapshot, type NewEventLogEntry, type StorageSnapshot } from "./storage"
 
 type CorrectionState = {
@@ -61,6 +61,13 @@ const hasLearnedFieldValues = (fieldMemory: StorageSnapshot["fieldMemory"]) =>
 
 const hasSecureVaultValues = (secureVaultValues: StorageSnapshot["secureVaultValues"]) =>
   Object.values(secureVaultValues).some((value) => value.trim().length > 0)
+
+const hasSecureVaultMaterial = (snapshot: StorageSnapshot) =>
+  Object.keys(snapshot.secureVault.entries).length > 0 || Boolean(snapshot.secureVaultRecovery || snapshot.secureVault.keyCheck)
+
+const canUseSecureVaultKey = async (snapshot: StorageSnapshot) =>
+  Boolean(snapshot.secureVaultKey) &&
+  (!snapshot.secureVault.keyCheck || (await validateSecureVaultKey(snapshot.secureVault, snapshot.secureVaultKey)))
 
 const normalizeLearnedValue = (field: FieldElement) => {
   const value = getFieldCurrentValue(field).trim()
@@ -221,6 +228,10 @@ export const createAutofillController = ({
     }
 
     const currentSnapshot = snapshot ?? (await loadSnapshot())
+    if (isSecureVaultField(state.securityClassification) && !(await canUseSecureVaultKey(currentSnapshot))) {
+      return
+    }
+
     state.lastPersistedValue = currentValue
     snapshot = await commitStorageChanges({
       ...(isSecureVaultField(state.securityClassification) && state.secureVaultKind
@@ -334,6 +345,10 @@ export const createAutofillController = ({
     }
 
     const isSecureField = isSecureVaultField(learnableField.securityClassification)
+    if (isSecureField && hasSecureVaultMaterial(currentSnapshot) && !(await canUseSecureVaultKey(currentSnapshot))) {
+      return
+    }
+
     const existingEntry = learnableField.fieldMemoryEntry
     const nextProfile = isSecureField
       ? null
@@ -510,6 +525,14 @@ export const createAutofillController = ({
       }
 
       if (requiresSecureAutofillConfirmation(candidate.securityClassification) && source !== "popup") {
+        continue
+      }
+
+      if (isSecureVaultField(candidate.securityClassification) && source !== "popup") {
+        continue
+      }
+
+      if (isSecureVaultField(candidate.securityClassification) && !(await canUseSecureVaultKey(nextSnapshot))) {
         continue
       }
 

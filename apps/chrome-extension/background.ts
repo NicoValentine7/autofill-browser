@@ -7,8 +7,31 @@ const PENDING_CLOUD_LOG_EVENTS_KEY = "autofillPendingCloudLogEvents"
 const ACCOUNT_SYNC_KEY = "autofillAccountSync"
 const PENDING_CLOUD_LOG_LIMIT = 200
 
+type StorageAreaWithAccessLevel = {
+  setAccessLevel?: (options: { accessLevel: "TRUSTED_AND_UNTRUSTED_CONTEXTS" | "TRUSTED_CONTEXTS" }) => Promise<void>
+}
+
 type AccountSyncState = {
   deviceId?: string
+}
+
+const setStorageAccessLevel = async (
+  storageArea: StorageAreaWithAccessLevel | undefined,
+  accessLevel: "TRUSTED_AND_UNTRUSTED_CONTEXTS" | "TRUSTED_CONTEXTS"
+) => {
+  try {
+    await storageArea?.setAccessLevel?.({
+      accessLevel
+    })
+  } catch (_error) {
+    // Older Chrome versions may not expose setAccessLevel on every storage area.
+  }
+}
+
+const configureStorageAccessLevels = async () => {
+  // Content scripts currently perform the actual field fill and must read the
+  // in-memory Vault Key until storage access is brokered through the service worker.
+  await setStorageAccessLevel(chrome.storage.session, "TRUSTED_AND_UNTRUSTED_CONTEXTS")
 }
 
 const getPendingCloudLogEvents = async () => {
@@ -57,6 +80,13 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage) => {
   void flushCloudLogEvents(message.preferGoogleAuth ? message.events : [])
 })
 
+void configureStorageAccessLevels()
+
+chrome.runtime.onInstalled?.addListener(() => {
+  void configureStorageAccessLevels()
+})
+
 chrome.runtime.onStartup?.addListener(() => {
+  void configureStorageAccessLevels()
   void flushCloudLogEvents()
 })

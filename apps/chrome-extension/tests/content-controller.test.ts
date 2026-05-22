@@ -3,6 +3,7 @@ import { setImmediate as waitImmediate } from "node:timers/promises"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { createAutofillController } from "../lib/content-controller"
+import { createEmptySecureVault, ensureSecureVaultKeyCheck, type SecureVaultKey } from "../lib/secure-vault"
 import { getStorageSnapshot } from "../lib/storage"
 import { createChromeMock } from "./helpers/mock-chrome"
 
@@ -28,6 +29,20 @@ const derivedProfile = {
 }
 
 const emptyProfile = Object.fromEntries(PROFILE_KEYS.map((key) => [key, ""])) as typeof profile
+
+const vaultKey: SecureVaultKey = {
+  schemaVersion: 1,
+  keyId: "vault-key-1",
+  algorithm: "AES-GCM",
+  rawKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+  createdAt: "2026-05-22T00:00:00.000Z"
+}
+
+const staleVaultKey: SecureVaultKey = {
+  ...vaultKey,
+  keyId: "vault-key-2",
+  rawKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
+}
 
 const flush = async () => {
   for (let index = 0; index < 10; index += 1) {
@@ -348,6 +363,42 @@ describe("content-controller", () => {
     expect(learnedEvents.every((entry) => entry.nextValue === undefined && entry.detail?.includes("values:redacted"))).toBe(true)
   })
 
+  it("does not learn secure vault fields when the local vault key fails the canary", async () => {
+    const secureVault = await ensureSecureVaultKeyCheck(createEmptySecureVault(), vaultKey)
+    const { chromeMock } = createChromeMock({
+      autofillProfile: emptyProfile,
+      autofillSecureVault: secureVault,
+      autofillSecureVaultKey: staleVaultKey
+    })
+    ;(globalThis as { chrome: typeof chrome }).chrome = chromeMock as unknown as typeof chrome
+    document.body.innerHTML = `
+      <label for="account-number">Account number</label>
+      <input id="account-number" name="account_number" />
+    `
+
+    const controller = createController({
+      chromeApi: chromeMock as unknown as typeof chrome,
+      debounceMs: 10
+    })
+
+    await controller.initialize()
+    await vi.runAllTimersAsync()
+    await flush()
+
+    const accountField = document.getElementById("account-number") as HTMLInputElement
+    accountField.value = "1234567"
+    accountField.dispatchEvent(new Event("input", { bubbles: true }))
+    accountField.dispatchEvent(new Event("blur", { bubbles: true }))
+
+    await vi.runAllTimersAsync()
+    await flush()
+    await controller.flushPendingWrites()
+
+    const snapshot = await getStorageSnapshot()
+    expect(snapshot.secureVault.entries).toEqual({})
+    expect(snapshot.eventLog.some((entry: { type: string }) => entry.type === "field_learned_from_user")).toBe(false)
+  })
+
   it("learns payment card fields without writing raw values to event logs", async () => {
     const { chromeMock } = createChromeMock({
       autofillProfile: emptyProfile
@@ -408,16 +459,25 @@ describe("content-controller", () => {
     await vi.runAllTimersAsync()
     await flush()
 
+    expect((document.getElementById("card-number") as HTMLInputElement).value).toBe("")
+    expect((document.getElementById("card-exp") as HTMLInputElement).value).toBe("")
+
+    await autofillController.runAutofill("popup")
+    await vi.runAllTimersAsync()
+    await flush()
+
     expect((document.getElementById("card-number") as HTMLInputElement).value).toBe("4111111111111111")
     expect((document.getElementById("card-exp") as HTMLInputElement).value).toBe("12/30")
 
-    const filledSnapshot = await getStorageSnapshot()
+    const filledSnapshot = await waitForSnapshot((nextSnapshot) => {
+      return nextSnapshot.eventLog.filter((entry: { type: string }) => entry.type === "field_filled").length >= 2
+    })
     const filledEvents = filledSnapshot.eventLog.filter((entry: { type: string }) => entry.type === "field_filled")
     expect(filledEvents).toHaveLength(2)
     expect(filledEvents.every((entry) => entry.nextValue === undefined && entry.detail?.includes("values:redacted"))).toBe(true)
   })
 
-  it("learns card security codes into the secure vault and fills them only from popup action", async () => {
+  it("does not persist or refill card security codes", async () => {
     const { chromeMock } = createChromeMock({
       autofillProfile: emptyProfile
     })
@@ -447,11 +507,9 @@ describe("content-controller", () => {
 
     const snapshot = await getStorageSnapshot()
     const learnedEvents = snapshot.eventLog.filter((entry: { type: string }) => entry.type === "field_learned_from_user")
-    expect(Object.values(snapshot.secureVaultValues)).toEqual(["123"])
+    expect(Object.values(snapshot.secureVaultValues)).toEqual([])
     expect(snapshot.fieldMemory).toEqual({})
-    expect(learnedEvents).toHaveLength(1)
-    expect(learnedEvents[0]?.nextValue).toBeUndefined()
-    expect(learnedEvents[0]?.detail).toContain("values:redacted")
+    expect(learnedEvents).toHaveLength(0)
 
     document.body.innerHTML = `
       <label for="cvv">Security code</label>
@@ -468,7 +526,7 @@ describe("content-controller", () => {
     expect((document.getElementById("cvv") as HTMLInputElement).value).toBe("")
 
     await automaticController.runAutofill("popup")
-    expect((document.getElementById("cvv") as HTMLInputElement).value).toBe("123")
+    expect((document.getElementById("cvv") as HTMLInputElement).value).toBe("")
   })
 
   it("does not learn dangerous manual inputs", async () => {
@@ -482,6 +540,10 @@ describe("content-controller", () => {
       <input id="password" name="password" type="password" />
       <label for="pin">PIN</label>
       <input id="pin" name="pin" />
+      <label for="auth-code">Authentication code</label>
+      <input id="auth-code" name="auth_code" />
+      <label for="security-code">Security code</label>
+      <input id="security-code" name="security_code" />
       <label for="secret-word">Secret word</label>
       <input id="secret-word" name="secret_word" />
     `
@@ -514,6 +576,16 @@ describe("content-controller", () => {
     pin.value = "1234"
     pin.dispatchEvent(new Event("input", { bubbles: true }))
     pin.dispatchEvent(new Event("blur", { bubbles: true }))
+
+    const authCode = document.getElementById("auth-code") as HTMLInputElement
+    authCode.value = "123456"
+    authCode.dispatchEvent(new Event("input", { bubbles: true }))
+    authCode.dispatchEvent(new Event("blur", { bubbles: true }))
+
+    const securityCode = document.getElementById("security-code") as HTMLInputElement
+    securityCode.value = "123456"
+    securityCode.dispatchEvent(new Event("input", { bubbles: true }))
+    securityCode.dispatchEvent(new Event("blur", { bubbles: true }))
 
     const secretWord = document.getElementById("secret-word") as HTMLInputElement
     secretWord.value = "first pet"

@@ -18,12 +18,46 @@ export const createChromeMock = (
   }
 ) => {
   const storageData: StorageData = { ...initialStorage }
+  const sessionStorageData: StorageData = {}
   const runtimeListeners = new Set<RuntimeListener>()
   const storageListeners = new Set<StorageListener>()
   const runtimeMessages: unknown[] = []
   const sentMessages: Array<{ tabId: number; message: unknown }> = []
   const identityRequests: unknown[] = []
   let authTokensCleared = false
+
+  const createStorageArea = (areaData: StorageData, areaName: string) => ({
+    async get(keys?: string | string[] | Record<string, unknown>) {
+      if (!keys) {
+        return { ...areaData }
+      }
+
+      if (typeof keys === "string") {
+        return {
+          [keys]: areaData[keys]
+        }
+      }
+
+      if (Array.isArray(keys)) {
+        return Object.fromEntries(keys.map((key) => [key, areaData[key]]))
+      }
+
+      return Object.fromEntries(Object.entries(keys).map(([key, fallbackValue]) => [key, areaData[key] ?? fallbackValue]))
+    },
+    async set(items: StorageData) {
+      const changes = Object.fromEntries(
+        Object.entries(items).map(([key, newValue]) => {
+          const oldValue = areaData[key]
+          areaData[key] = newValue
+          return [key, { oldValue, newValue }]
+        })
+      )
+
+      for (const listener of storageListeners) {
+        listener(changes, areaName)
+      }
+    }
+  })
 
   const chromeMock = {
     runtime: {
@@ -40,40 +74,8 @@ export const createChromeMock = (
       }
     },
     storage: {
-      local: {
-        async get(keys?: string | string[] | Record<string, unknown>) {
-          if (!keys) {
-            return { ...storageData }
-          }
-
-          if (typeof keys === "string") {
-            return {
-              [keys]: storageData[keys]
-            }
-          }
-
-          if (Array.isArray(keys)) {
-            return Object.fromEntries(keys.map((key) => [key, storageData[key]]))
-          }
-
-          return Object.fromEntries(
-            Object.entries(keys).map(([key, fallbackValue]) => [key, storageData[key] ?? fallbackValue])
-          )
-        },
-        async set(items: StorageData) {
-          const changes = Object.fromEntries(
-            Object.entries(items).map(([key, newValue]) => {
-              const oldValue = storageData[key]
-              storageData[key] = newValue
-              return [key, { oldValue, newValue }]
-            })
-          )
-
-          for (const listener of storageListeners) {
-            listener(changes, "local")
-          }
-        }
-      },
+      local: createStorageArea(storageData, "local"),
+      session: createStorageArea(sessionStorageData, "session"),
       onChanged: {
         addListener: (listener: StorageListener) => {
           storageListeners.add(listener)
@@ -107,6 +109,7 @@ export const createChromeMock = (
   return {
     chromeMock,
     storageData,
+    sessionStorageData,
     runtimeMessages,
     sentMessages,
     identityRequests,

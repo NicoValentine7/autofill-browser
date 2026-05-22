@@ -14,13 +14,23 @@ const BLOCKED_FIELD_TOKENS = [
   "token",
   "otp",
   "one time code",
+  "one time password",
   "2fa",
   "mfa",
+  "totp",
   "verification code",
+  "authentication code",
+  "auth code",
+  "login code",
+  "sms code",
   "passcode",
   "password",
   "passwd",
   "pwd",
+  "login id",
+  "login user id",
+  "user id",
+  "userid",
   "username",
   "user name",
   "iam username",
@@ -35,9 +45,16 @@ const BLOCKED_FIELD_TOKENS = [
   "pin code",
   "pin number",
   "暗証番号",
+  "確認コード",
+  "認証コード",
+  "ワンタイム",
+  "ログインid",
+  "ユーザーid",
   "合言葉",
   "秘密の質問"
 ]
+
+const GENERIC_SECURITY_CODE_TOKENS = ["security code", "security number"]
 
 const SECURE_VAULT_CONFIRM_FIELD_TOKENS = [
   "cvv",
@@ -49,8 +66,6 @@ const SECURE_VAULT_CONFIRM_FIELD_TOKENS = [
   "cid",
   "card security code",
   "card verification",
-  "security code",
-  "security number",
   "セキュリティコード",
   "カード確認コード"
 ]
@@ -83,19 +98,13 @@ const SECURE_VAULT_FIELD_TOKENS = [
   "account number",
   "account no",
   "bank account",
-  "login user id",
-  "user id",
-  "userid",
-  "customer id",
   "カード番号",
   "カード名義",
   "名義人",
   "有効期限",
   "支店番号",
   "支店コード",
-  "口座番号",
-  "ログインid",
-  "ユーザーid"
+  "口座番号"
 ]
 
 export const getDescriptorIdentity = (descriptor: FieldDescriptor) =>
@@ -126,8 +135,12 @@ export const classifyFieldSecurity = (
     return "blocked"
   }
 
+  if (hasIdentityToken(identity, GENERIC_SECURITY_CODE_TOKENS) && !hasIdentityToken(identity, SECURE_VAULT_CONFIRM_FIELD_TOKENS)) {
+    return "blocked"
+  }
+
   if (hasIdentityToken(identity, SECURE_VAULT_CONFIRM_FIELD_TOKENS)) {
-    return "secure-vault-confirm"
+    return "blocked"
   }
 
   if (hasIdentityToken(identity, SECURE_VAULT_FIELD_TOKENS)) {

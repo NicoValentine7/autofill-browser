@@ -5,9 +5,9 @@ import { normalizeGoogleAuthUser } from "./google-auth"
 import type { SecureVaultRecoveryPackage, SecureVaultState } from "./secure-vault"
 import type { GoogleAuthUser, RemoteAutofillRules, StorageSnapshot } from "./storage"
 
-export type SyncField = "profile" | "settings" | "domainPolicies" | "secureVault"
+export type SyncField = "profile" | "settings" | "domainPolicies" | "secureVault" | "secureVaultRecovery"
 
-const ALL_SYNC_FIELDS: SyncField[] = ["profile", "settings", "domainPolicies", "secureVault"]
+const ALL_SYNC_FIELDS: SyncField[] = ["profile", "settings", "domainPolicies", "secureVault", "secureVaultRecovery"]
 
 export type SyncedSnapshot = {
   schemaVersion: 1
@@ -81,18 +81,15 @@ const authedJsonFetch = async <T>(
 
 export const buildSyncedSnapshot = (snapshot: StorageSnapshot, changedFields: SyncField[] = ALL_SYNC_FIELDS): SyncedSnapshot => {
   const shouldSyncSecureVault = changedFields.includes("secureVault")
+  const shouldSyncSecureVaultRecovery = shouldSyncSecureVault || changedFields.includes("secureVaultRecovery")
 
   return {
     schemaVersion: 1,
     profile: snapshot.profile,
     settings: snapshot.settings,
     domainPolicies: snapshot.domainPolicies,
-    ...(shouldSyncSecureVault
-      ? {
-          secureVault: snapshot.secureVault,
-          ...(snapshot.secureVaultRecovery ? { secureVaultRecovery: snapshot.secureVaultRecovery } : {})
-        }
-      : {}),
+    ...(shouldSyncSecureVault ? { secureVault: snapshot.secureVault } : {}),
+    ...(shouldSyncSecureVaultRecovery && snapshot.secureVaultRecovery ? { secureVaultRecovery: snapshot.secureVaultRecovery } : {}),
     updatedAt: new Date().toISOString(),
     baseRevision: snapshot.accountSync.lastRevision ?? 0,
     deviceId: snapshot.accountSync.deviceId,

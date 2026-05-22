@@ -156,7 +156,7 @@ function PopupApp() {
     return nextSnapshot
   }
 
-  const pushSnapshotIfSignedIn = async (nextSnapshot: StorageSnapshot, changedFields: SyncField[] = ["profile", "settings", "domainPolicies", "secureVault"]) => {
+  const pushSnapshotIfSignedIn = async (nextSnapshot: StorageSnapshot, changedFields: SyncField[] = ["profile", "settings", "domainPolicies", "secureVault", "secureVaultRecovery"]) => {
     if (!nextSnapshot.googleAuthUser) {
       return nextSnapshot
     }
@@ -390,7 +390,11 @@ function PopupApp() {
       return
     }
 
-    const recoveryPackage = await createSecureVaultRecoveryPackage(snapshot.secureVaultKey, vaultRecoveryPassphrase)
+    const recoveryPackage = await createSecureVaultRecoveryPackage(
+      snapshot.secureVaultKey,
+      vaultRecoveryPassphrase,
+      snapshot.secureVault.vaultId
+    )
     if (!recoveryPackage) {
       setStatus("回復フレーズを保存できへんかった")
       return
@@ -401,7 +405,7 @@ function PopupApp() {
     setVaultRecoveryPassphrase("")
     setIsGeneratedVaultRecoveryPassphrase(false)
     setShowVaultRecoveryPassphrase(false)
-    const pushedSnapshot = await pushSnapshotIfSignedIn(nextSnapshot, ["secureVault"])
+    const pushedSnapshot = await pushSnapshotIfSignedIn(nextSnapshot, ["secureVaultRecovery"])
     if (!nextSnapshot.googleAuthUser) {
       setStatus("回復フレーズをローカル保存したで。Googleログイン後にもう一度保存してな")
     } else if ((pushedSnapshot.accountSync.lastPushedAt ?? "") !== (nextSnapshot.accountSync.lastPushedAt ?? "")) {
@@ -415,7 +419,7 @@ function PopupApp() {
       return
     }
 
-    const recoveredKey = await recoverSecureVaultKey(snapshot.secureVaultRecovery, vaultRecoveryPassphrase)
+    const recoveredKey = await recoverSecureVaultKey(snapshot.secureVaultRecovery, vaultRecoveryPassphrase, snapshot.secureVault)
     if (!recoveredKey) {
       setStatus("回復フレーズが違うか短すぎるで")
       return

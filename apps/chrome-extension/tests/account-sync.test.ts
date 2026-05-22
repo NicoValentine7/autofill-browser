@@ -63,7 +63,7 @@ describe("account-sync", () => {
     expect(syncedSnapshot).toMatchObject({
       baseRevision: 3,
       deviceId: "device-a",
-      changedFields: ["profile", "settings", "domainPolicies", "secureVault"]
+      changedFields: ["profile", "settings", "domainPolicies", "secureVault", "secureVaultRecovery"]
     })
   })
 
@@ -73,5 +73,13 @@ describe("account-sync", () => {
     expect(syncedSnapshot).not.toHaveProperty("secureVault")
     expect(syncedSnapshot).not.toHaveProperty("secureVaultRecovery")
     expect(syncedSnapshot.changedFields).toEqual(["profile"])
+  })
+
+  it("includes recovery package when only secureVaultRecovery changed", () => {
+    const syncedSnapshot = buildSyncedSnapshot(snapshot, ["secureVaultRecovery"])
+
+    expect(syncedSnapshot).not.toHaveProperty("secureVault")
+    expect(syncedSnapshot.secureVaultRecovery?.ciphertext).toBe("wrapped-key")
+    expect(syncedSnapshot.changedFields).toEqual(["secureVaultRecovery"])
   })
 })

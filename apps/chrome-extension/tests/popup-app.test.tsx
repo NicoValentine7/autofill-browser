@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import PopupApp from "../lib/popup-app"
 import { createSecureVaultRecoveryPackage, type SecureVaultKey } from "../lib/secure-vault"
+import { getStorageSnapshot } from "../lib/storage"
 import { createChromeMock } from "./helpers/mock-chrome"
 
 const createEvent = (index: number): EventLogEntry => ({
@@ -37,6 +38,19 @@ const secondVaultKey: SecureVaultKey = {
 describe("PopupApp", () => {
   afterEach(() => {
     vi.unstubAllGlobals()
+  })
+
+  it("migrates a legacy persisted Secure Vault key into session storage", async () => {
+    const mock = createChromeMock({
+      autofillSecureVaultKey: vaultKey
+    })
+    ;(globalThis as { chrome: typeof chrome }).chrome = mock.chromeMock as unknown as typeof chrome
+
+    const snapshot = await getStorageSnapshot()
+
+    expect(snapshot.secureVaultKey).toEqual(vaultKey)
+    expect(mock.sessionStorageData.autofillSecureVaultKey).toEqual(vaultKey)
+    expect(mock.storageData.autofillSecureVaultKey).toBeNull()
   })
 
   it("shows the profile editor when storage is empty", async () => {
@@ -343,7 +357,8 @@ describe("PopupApp", () => {
     await user.click(screen.getByRole("button", { name: "Vault Keyを復元" }))
 
     await waitFor(() => {
-      expect(mock.storageData.autofillSecureVaultKey).toEqual(vaultKey)
+      expect(mock.sessionStorageData.autofillSecureVaultKey).toEqual(vaultKey)
+      expect(mock.storageData.autofillSecureVaultKey).toBeNull()
     })
   })
 
@@ -366,7 +381,8 @@ describe("PopupApp", () => {
     await user.click(screen.getByRole("button", { name: "Vault Keyを復元" }))
 
     await waitFor(() => {
-      expect(mock.storageData.autofillSecureVaultKey).toEqual(secondVaultKey)
+      expect(mock.sessionStorageData.autofillSecureVaultKey).toEqual(secondVaultKey)
+      expect(mock.storageData.autofillSecureVaultKey).toBeNull()
     })
   })
 
