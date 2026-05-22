@@ -2,7 +2,7 @@ import type { AutofillSettings, DomainPolicy, StoredProfile } from "@autofill-br
 
 import { buildCloudWorkerUrl } from "./cloud-config"
 import { normalizeGoogleAuthUser } from "./google-auth"
-import type { SecureVaultKey, SecureVaultState } from "./secure-vault"
+import type { SecureVaultState } from "./secure-vault"
 import type { GoogleAuthUser, RemoteAutofillRules, StorageSnapshot } from "./storage"
 
 export type SyncField = "profile" | "settings" | "domainPolicies" | "secureVault"
@@ -15,7 +15,6 @@ export type SyncedSnapshot = {
   settings: AutofillSettings
   domainPolicies: Record<string, DomainPolicy>
   secureVault?: SecureVaultState
-  secureVaultKey?: SecureVaultKey
   updatedAt: string
   revision?: number
   baseRevision?: number
@@ -85,7 +84,6 @@ export const buildSyncedSnapshot = (snapshot: StorageSnapshot, changedFields: Sy
   settings: snapshot.settings,
   domainPolicies: snapshot.domainPolicies,
   secureVault: snapshot.secureVault,
-  secureVaultKey: snapshot.secureVaultKey,
   updatedAt: new Date().toISOString(),
   baseRevision: snapshot.accountSync.lastRevision ?? 0,
   deviceId: snapshot.accountSync.deviceId,

@@ -428,7 +428,6 @@ export const saveRemoteRules = async (remoteRules: RemoteAutofillRules) =>
 export const applySyncedSnapshot = async (
   syncedSnapshot: Pick<StorageSnapshot, "profile" | "settings" | "domainPolicies"> & {
     secureVault?: SecureVaultState
-    secureVaultKey?: SecureVaultKey
     updatedAt?: string
     revision?: number
   },
@@ -439,7 +438,6 @@ export const applySyncedSnapshot = async (
     settings: syncedSnapshot.settings,
     domainPolicies: syncedSnapshot.domainPolicies,
     ...(syncedSnapshot.secureVault ? { secureVault: syncedSnapshot.secureVault } : {}),
-    ...(syncedSnapshot.secureVaultKey ? { secureVaultKey: syncedSnapshot.secureVaultKey } : {}),
     accountSync: {
       lastPulledAt: new Date().toISOString(),
       lastRemoteUpdatedAt: remoteUpdatedAt ?? syncedSnapshot.updatedAt,

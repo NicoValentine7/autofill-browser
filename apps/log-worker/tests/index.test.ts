@@ -138,6 +138,13 @@ class FakeStatement implements D1PreparedStatement {
       }
     }
 
+    if (this.query.includes("UPDATE user_sync_snapshots")) {
+      const snapshot = this.db.snapshots.find((row) => row.user_id === this.values[1])
+      if (snapshot) {
+        snapshot.secure_vault_json = this.values[0] === null ? null : String(this.values[0])
+      }
+    }
+
     if (this.query.includes("INSERT OR REPLACE INTO user_sync_snapshots")) {
       const row: StoredSyncSnapshotRow = {
         user_id: String(this.values[0]),
@@ -650,7 +657,7 @@ describe("log-worker", () => {
               schemaVersion: 1,
               algorithm: "AES-GCM",
               iv: "iv",
-              ciphertext: "4111111111111111"
+              ciphertext: "client-side-card-ciphertext"
             },
             timesAutofilled: 0,
             timesCorrected: 0,
@@ -659,13 +666,6 @@ describe("log-worker", () => {
             updatedAt: "2026-05-21T00:00:00.000Z"
           }
         }
-      },
-      secureVaultKey: {
-        schemaVersion: 1,
-        keyId: "vault-key",
-        algorithm: "AES-GCM",
-        rawKey: "vault-raw-key",
-        createdAt: "2026-05-21T00:00:00.000Z"
       },
       updatedAt: "2026-05-21T00:00:00.000Z",
       baseRevision: 0,
@@ -691,11 +691,92 @@ describe("log-worker", () => {
 
     expect(putResponse.status).toBe(200)
     expect(getResponse.status).toBe(200)
-    expect(body.snapshot.secureVaultKey.keyId).toBe("vault-key")
+    expect(body.snapshot).not.toHaveProperty("secureVaultKey")
     expect(body.snapshot.secureVault.entries["example.com::field"].kind).toBe("payment-card")
     expect(env.DB.snapshots[0]?.secure_vault_json).toContain('"encrypted":true')
-    expect(env.DB.snapshots[0]?.secure_vault_json).not.toContain("4111111111111111")
-    expect(env.DB.snapshots[0]?.raw_json).not.toContain("vault-raw-key")
+    expect(env.DB.snapshots[0]?.secure_vault_json).not.toContain("client-side-card-ciphertext")
+    expect(env.DB.snapshots[0]?.raw_json).not.toContain("client-side-card-ciphertext")
+  })
+
+  it("scrubs legacy secure vault keys from the current sync row on read", async () => {
+    const env = createEnv()
+    mockGoogleTokenInfo()
+    const snapshot = {
+      schemaVersion: 1,
+      profile: {
+        familyName: "",
+        givenName: "",
+        fullName: "",
+        email: "",
+        phone: "",
+        organization: "",
+        postalCode: "",
+        prefecture: "",
+        city: "",
+        addressLine1: "",
+        addressLine2: ""
+      },
+      settings: {
+        enabled: true,
+        observeDynamicForms: true,
+        minMatchCount: 1
+      },
+      domainPolicies: {},
+      secureVault: {
+        schemaVersion: 1,
+        encryptionVersion: 1,
+        entries: {
+          "example.com::field": {
+            hostname: "example.com",
+            fieldSignature: "field",
+            kind: "payment-card",
+            encryptedValue: {
+              schemaVersion: 1,
+              algorithm: "AES-GCM",
+              iv: "iv",
+              ciphertext: "client-side-card-ciphertext"
+            },
+            timesAutofilled: 0,
+            timesCorrected: 0,
+            timesLearned: 1,
+            createdAt: "2026-05-21T00:00:00.000Z",
+            updatedAt: "2026-05-21T00:00:00.000Z"
+          }
+        }
+      },
+      updatedAt: "2026-05-21T00:00:00.000Z",
+      baseRevision: 0,
+      deviceId: "device-a",
+      changedFields: ["secureVault"]
+    }
+
+    await worker.fetch(
+      new Request("https://logs.example.com/me/settings", {
+        method: "PUT",
+        headers: googleHeaders,
+        body: JSON.stringify(snapshot)
+      }),
+      env
+    )
+    env.DB.snapshots[0]!.secure_vault_json = JSON.stringify({
+      secureVault: snapshot.secureVault,
+      secureVaultKey: {
+        rawKey: "legacy-raw-key"
+      }
+    })
+
+    const response = await worker.fetch(
+      new Request("https://logs.example.com/me/settings", {
+        headers: googleHeaders
+      }),
+      env
+    )
+    const body = (await response.json()) as { snapshot: typeof snapshot }
+
+    expect(response.status).toBe(200)
+    expect(body.snapshot).not.toHaveProperty("secureVaultKey")
+    expect(env.DB.snapshots[0]?.secure_vault_json).toContain('"encrypted":true')
+    expect(env.DB.snapshots[0]?.secure_vault_json).not.toContain("legacy-raw-key")
   })
 
   it("merges disjoint sync changes and rejects overlapping stale changes", async () => {

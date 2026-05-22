@@ -48,6 +48,7 @@ describe("account-sync", () => {
     })
     expect(syncedSnapshot.settings).not.toHaveProperty("cloudLogSync")
     expect(syncedSnapshot.secureVault?.entries).toEqual({})
+    expect(syncedSnapshot).not.toHaveProperty("secureVaultKey")
     expect(syncedSnapshot).toMatchObject({
       baseRevision: 3,
       deviceId: "device-a",
