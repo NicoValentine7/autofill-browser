@@ -72,10 +72,11 @@ pnpm dev:extension
 
 自動入力は、通常プロフィール、学習済み任意フィールド、銀行/カード系フィールドを同じ候補収集層で扱います。ただし、機密度で保存・ログ出力の扱いを分けます。
 
-- 支店番号、口座番号、カード番号、有効期限、カード名義は学習・自動入力できます
+- 支店番号、口座番号、カード番号、有効期限、カード名義は Secure Vault に学習し、自動入力できます
+- CVC/CVV は Secure Vault に学習できますが、ページ読み込み時には自動入力せず、popupからの手動実行時だけ入力します
 - 銀行/カード系の `field_learned_from_user` / `field_filled` / `field_corrected_by_user` イベントは、`previousValue` / `nextValue` を保存せず `values:redacted` だけ残します
-- CVC/CVV、PIN、パスワード、OTP、captcha、CSRF/token、合言葉/秘密の質問系は学習も自動入力もしません
-- CVC/CVV や認証用の秘密は保存対象にしません。カード決済や追加認証では毎回入力する前提です
+- PIN、パスワード、OTP、captcha、CSRF/token、合言葉/秘密の質問系は学習も自動入力もしません
+- Secure Vault は通常の `fieldMemory` と分離し、ローカルでは AES-GCM で暗号化して保存します。Google同期では Worker 側でも暗号化してD1へ保存します
 
 #### 拡張IDを固定する
 

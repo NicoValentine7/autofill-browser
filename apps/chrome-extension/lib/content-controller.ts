@@ -13,8 +13,14 @@ import {
   getFieldCurrentValue,
   type FieldElement
 } from "./autofill-engine"
-import { shouldRedactFieldEventValues, type FieldSecurityClassification } from "./field-security"
+import {
+  isSecureVaultField,
+  requiresSecureAutofillConfirmation,
+  shouldRedactFieldEventValues,
+  type FieldSecurityClassification
+} from "./field-security"
 import type { ExtensionMessage } from "./messages"
+import { type SecureVaultValueUpdate } from "./secure-vault"
 import { commitStorageChanges, getStorageSnapshot, type NewEventLogEntry, type StorageSnapshot } from "./storage"
 
 type CorrectionState = {
@@ -24,6 +30,7 @@ type CorrectionState = {
   fieldSignature: string
   profileKey: FieldMemoryEntry["profileKey"]
   securityClassification: FieldSecurityClassification
+  secureVaultKind?: SecureVaultValueUpdate["kind"]
   autofilledValue: string
   runId: string
   lastPersistedValue: string
@@ -51,6 +58,9 @@ const FIELD_SELECTOR = "input, textarea, select"
 
 const hasLearnedFieldValues = (fieldMemory: StorageSnapshot["fieldMemory"]) =>
   Object.values(fieldMemory).some((entry) => entry.lastUserValue.trim().length > 0)
+
+const hasSecureVaultValues = (secureVaultValues: StorageSnapshot["secureVaultValues"]) =>
+  Object.values(secureVaultValues).some((value) => value.trim().length > 0)
 
 const normalizeLearnedValue = (field: FieldElement) => {
   const value = getFieldCurrentValue(field).trim()
@@ -167,7 +177,11 @@ export const createAutofillController = ({
       return false
     }
 
-    return isProfileConfigured(nextSnapshot.profile) || hasLearnedFieldValues(nextSnapshot.fieldMemory)
+    return (
+      isProfileConfigured(nextSnapshot.profile) ||
+      hasLearnedFieldValues(nextSnapshot.fieldMemory) ||
+      hasSecureVaultValues(nextSnapshot.secureVaultValues)
+    )
   }
 
   const syncMutationObserver = () => {
@@ -207,23 +221,42 @@ export const createAutofillController = ({
     }
 
     const currentSnapshot = snapshot ?? (await loadSnapshot())
-    const existingEntry = currentSnapshot.fieldMemory[`${state.hostname}::${state.fieldSignature}`]
-    const updatedEntry: FieldMemoryEntry = {
-      hostname: state.hostname,
-      fieldSignature: state.fieldSignature,
-      profileKey: state.profileKey,
-      lastAutofilledValue: state.autofilledValue,
-      lastUserValue: currentValue,
-      timesAutofilled: existingEntry?.timesAutofilled ?? 0,
-      timesCorrected: (existingEntry?.timesCorrected ?? 0) + 1,
-      timesLearned: existingEntry?.timesLearned ?? 0,
-      learnedLabel: existingEntry?.learnedLabel,
-      updatedAt: new Date().toISOString()
-    }
-
     state.lastPersistedValue = currentValue
     snapshot = await commitStorageChanges({
-      fieldMemoryUpdates: [updatedEntry],
+      ...(isSecureVaultField(state.securityClassification) && state.secureVaultKind
+        ? {
+            secureVaultUpdates: [
+              {
+                hostname: state.hostname,
+                fieldSignature: state.fieldSignature,
+                kind: state.secureVaultKind,
+                value: currentValue,
+                incrementCorrected: true
+              }
+            ],
+            fieldMemoryDeletes: [
+              {
+                hostname: state.hostname,
+                fieldSignature: state.fieldSignature
+              }
+            ]
+          }
+        : {
+            fieldMemoryUpdates: [
+              {
+                hostname: state.hostname,
+                fieldSignature: state.fieldSignature,
+                profileKey: state.profileKey,
+                lastAutofilledValue: state.autofilledValue,
+                lastUserValue: currentValue,
+                timesAutofilled: currentSnapshot.fieldMemory[`${state.hostname}::${state.fieldSignature}`]?.timesAutofilled ?? 0,
+                timesCorrected: (currentSnapshot.fieldMemory[`${state.hostname}::${state.fieldSignature}`]?.timesCorrected ?? 0) + 1,
+                timesLearned: currentSnapshot.fieldMemory[`${state.hostname}::${state.fieldSignature}`]?.timesLearned ?? 0,
+                learnedLabel: currentSnapshot.fieldMemory[`${state.hostname}::${state.fieldSignature}`]?.learnedLabel,
+                updatedAt: new Date().toISOString()
+              }
+            ]
+          }),
       eventEntries: [
         {
           type: "field_corrected_by_user",
@@ -300,34 +333,65 @@ export const createAutofillController = ({
       return
     }
 
+    const isSecureField = isSecureVaultField(learnableField.securityClassification)
     const existingEntry = learnableField.fieldMemoryEntry
-    const nextProfile = promoteProfileValue(currentSnapshot.profile, learnableField.profileKey ?? existingEntry?.profileKey, currentValue)
+    const nextProfile = isSecureField
+      ? null
+      : promoteProfileValue(currentSnapshot.profile, learnableField.profileKey ?? existingEntry?.profileKey, currentValue)
     const previousLearnedValue = existingEntry?.lastUserValue.trim() ?? ""
 
-    if (previousLearnedValue === currentValue && !nextProfile) {
+    if ((isSecureField ? learnableField.secureVaultValue : previousLearnedValue) === currentValue && !nextProfile) {
       state.lastPersistedValue = currentValue
       return
     }
 
     const profileKey = learnableField.profileKey ?? existingEntry?.profileKey
-    const eventDetail = nextProfile ? `profile:${profileKey}` : profileKey ? `memory:${profileKey}` : "memory:custom"
-    const updatedEntry: FieldMemoryEntry = {
-      hostname: learnableField.descriptor.hostname,
-      fieldSignature: learnableField.fieldSignature,
-      profileKey: profileKey ?? undefined,
-      learnedLabel: getLearnedLabel(learnableField.descriptor) ?? existingEntry?.learnedLabel,
-      lastAutofilledValue: existingEntry?.lastAutofilledValue ?? "",
-      lastUserValue: currentValue,
-      timesAutofilled: existingEntry?.timesAutofilled ?? 0,
-      timesCorrected: existingEntry?.timesCorrected ?? 0,
-      timesLearned: (existingEntry?.timesLearned ?? 0) + 1,
-      updatedAt: new Date().toISOString()
-    }
+    const eventDetail = isSecureField
+      ? `vault:${learnableField.secureVaultKind ?? "custom"}`
+      : nextProfile
+        ? `profile:${profileKey}`
+        : profileKey
+          ? `memory:${profileKey}`
+          : "memory:custom"
 
     state.lastPersistedValue = currentValue
     snapshot = await commitStorageChanges({
       ...(nextProfile ? { profile: nextProfile } : {}),
-      fieldMemoryUpdates: [updatedEntry],
+      ...(isSecureField && learnableField.secureVaultKind
+        ? {
+            secureVaultUpdates: [
+              {
+                hostname: learnableField.descriptor.hostname,
+                fieldSignature: learnableField.fieldSignature,
+                kind: learnableField.secureVaultKind,
+                label: getLearnedLabel(learnableField.descriptor) ?? learnableField.secureVaultEntry?.label,
+                value: currentValue,
+                incrementLearned: true
+              }
+            ],
+            fieldMemoryDeletes: [
+              {
+                hostname: learnableField.descriptor.hostname,
+                fieldSignature: learnableField.fieldSignature
+              }
+            ]
+          }
+        : {
+            fieldMemoryUpdates: [
+              {
+                hostname: learnableField.descriptor.hostname,
+                fieldSignature: learnableField.fieldSignature,
+                profileKey: profileKey ?? undefined,
+                learnedLabel: getLearnedLabel(learnableField.descriptor) ?? existingEntry?.learnedLabel,
+                lastAutofilledValue: existingEntry?.lastAutofilledValue ?? "",
+                lastUserValue: currentValue,
+                timesAutofilled: existingEntry?.timesAutofilled ?? 0,
+                timesCorrected: existingEntry?.timesCorrected ?? 0,
+                timesLearned: (existingEntry?.timesLearned ?? 0) + 1,
+                updatedAt: new Date().toISOString()
+              }
+            ]
+          }),
       eventEntries: [
         {
           type: "field_learned_from_user",
@@ -421,6 +485,8 @@ export const createAutofillController = ({
 
     const runId = createRunId()
     const fieldMemoryUpdates: FieldMemoryEntry[] = []
+    const fieldMemoryDeletes: Array<{ hostname: string; fieldSignature: string }> = []
+    const secureVaultUpdates: SecureVaultValueUpdate[] = []
     const eventEntries: NewEventLogEntry[] = [
       {
         type: "autofill_run",
@@ -443,6 +509,10 @@ export const createAutofillController = ({
         continue
       }
 
+      if (requiresSecureAutofillConfirmation(candidate.securityClassification) && source !== "popup") {
+        continue
+      }
+
       internalAutofillFields.add(candidate.field)
       setNativeFieldValue(candidate.field, candidate.appliedValue)
       candidate.field.dispatchEvent(new Event("input", { bubbles: true }))
@@ -452,20 +522,35 @@ export const createAutofillController = ({
       internalAutofillFields.delete(candidate.field)
       processedRunKeys.add(dedupeKey)
 
-      const updatedEntry: FieldMemoryEntry = {
-        hostname: candidate.descriptor.hostname,
-        fieldSignature: candidate.fieldSignature,
-        profileKey: candidate.profileKey,
-        lastAutofilledValue: candidate.rawValue,
-        lastUserValue: candidate.fieldMemoryEntry?.lastUserValue ?? "",
-        timesAutofilled: (candidate.fieldMemoryEntry?.timesAutofilled ?? 0) + 1,
-        timesCorrected: candidate.fieldMemoryEntry?.timesCorrected ?? 0,
-        timesLearned: candidate.fieldMemoryEntry?.timesLearned ?? 0,
-        learnedLabel: candidate.fieldMemoryEntry?.learnedLabel,
-        updatedAt: new Date().toISOString()
+      if (isSecureVaultField(candidate.securityClassification) && candidate.secureVaultKind) {
+        secureVaultUpdates.push({
+          hostname: candidate.descriptor.hostname,
+          fieldSignature: candidate.fieldSignature,
+          kind: candidate.secureVaultKind,
+          label: candidate.secureVaultEntry?.label ?? getLearnedLabel(candidate.descriptor),
+          value: candidate.rawValue,
+          incrementAutofilled: true
+        })
+        if (candidate.usesLegacyMemoryValue) {
+          fieldMemoryDeletes.push({
+            hostname: candidate.descriptor.hostname,
+            fieldSignature: candidate.fieldSignature
+          })
+        }
+      } else {
+        fieldMemoryUpdates.push({
+          hostname: candidate.descriptor.hostname,
+          fieldSignature: candidate.fieldSignature,
+          profileKey: candidate.profileKey,
+          lastAutofilledValue: candidate.rawValue,
+          lastUserValue: candidate.fieldMemoryEntry?.lastUserValue ?? "",
+          timesAutofilled: (candidate.fieldMemoryEntry?.timesAutofilled ?? 0) + 1,
+          timesCorrected: candidate.fieldMemoryEntry?.timesCorrected ?? 0,
+          timesLearned: candidate.fieldMemoryEntry?.timesLearned ?? 0,
+          learnedLabel: candidate.fieldMemoryEntry?.learnedLabel,
+          updatedAt: new Date().toISOString()
+        })
       }
-
-      fieldMemoryUpdates.push(updatedEntry)
       eventEntries.push({
         type: "field_filled",
         hostname: candidate.descriptor.hostname,
@@ -483,18 +568,21 @@ export const createAutofillController = ({
         url: candidate.descriptor.url,
         fieldSignature: candidate.fieldSignature,
         profileKey: candidate.profileKey,
+        secureVaultKind: candidate.secureVaultKind,
         securityClassification: candidate.securityClassification,
         autofilledValue: candidate.rawValue,
         runId
       })
     }
 
-    if (fieldMemoryUpdates.length === 0) {
+    if (fieldMemoryUpdates.length === 0 && secureVaultUpdates.length === 0 && fieldMemoryDeletes.length === 0) {
       return false
     }
 
     snapshot = await commitStorageChanges({
       fieldMemoryUpdates,
+      fieldMemoryDeletes,
+      secureVaultUpdates,
       eventEntries
     })
 
@@ -580,6 +668,14 @@ export const createAutofillController = ({
     initialize,
     loadSnapshot,
     runAutofill,
-    shouldAutofill: () => (snapshot ? shouldAutofill(snapshot) : false)
+    flushPendingWrites: () => learnedInputPersistQueue.catch(() => undefined),
+    shouldAutofill: () => (snapshot ? shouldAutofill(snapshot) : false),
+    dispose: () => {
+      windowObject.clearTimeout(mutationTimer)
+      windowObject.clearTimeout(navigationTimer)
+      observer?.disconnect()
+      observer = null
+      initialized = false
+    }
   }
 }

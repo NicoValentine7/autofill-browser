@@ -2,6 +2,7 @@ import { DEFAULT_AUTOFILL_SETTINGS, createEmptyProfile } from "@autofill-browser
 import { describe, expect, it } from "vitest"
 
 import { buildSyncedSnapshot, buildWorkerUrl } from "../lib/account-sync"
+import { createEmptySecureVault } from "../lib/secure-vault"
 import type { StorageSnapshot } from "../lib/storage"
 
 const snapshot: StorageSnapshot = {
@@ -15,6 +16,8 @@ const snapshot: StorageSnapshot = {
     "example.com": "whitelist"
   },
   fieldMemory: {},
+  secureVault: createEmptySecureVault(),
+  secureVaultValues: {},
   eventLog: [],
   accountSync: {
     deviceId: "device-a",
@@ -44,10 +47,11 @@ describe("account-sync", () => {
       minMatchCount: 1
     })
     expect(syncedSnapshot.settings).not.toHaveProperty("cloudLogSync")
+    expect(syncedSnapshot.secureVault?.entries).toEqual({})
     expect(syncedSnapshot).toMatchObject({
       baseRevision: 3,
       deviceId: "device-a",
-      changedFields: ["profile", "settings", "domainPolicies"]
+      changedFields: ["profile", "settings", "domainPolicies", "secureVault"]
     })
   })
 })

@@ -1,6 +1,6 @@
 import { normalizeText, type FieldDescriptor } from "@autofill-browser/autofill-core"
 
-export type FieldSecurityClassification = "normal" | "sensitive-fillable" | "blocked"
+export type FieldSecurityClassification = "normal" | "secure-vault" | "secure-vault-confirm" | "blocked"
 
 const BLOCKED_FIELD_TOKENS = [
   "captcha",
@@ -29,6 +29,17 @@ const BLOCKED_FIELD_TOKENS = [
   "security word",
   "security answer",
   "security question",
+  "pin",
+  "pincode",
+  "pinnumber",
+  "pin code",
+  "pin number",
+  "暗証番号",
+  "合言葉",
+  "秘密の質問"
+]
+
+const SECURE_VAULT_CONFIRM_FIELD_TOKENS = [
   "cvv",
   "cvv2",
   "cvc",
@@ -40,19 +51,11 @@ const BLOCKED_FIELD_TOKENS = [
   "card verification",
   "security code",
   "security number",
-  "pin",
-  "pincode",
-  "pinnumber",
-  "pin code",
-  "pin number",
   "セキュリティコード",
-  "カード確認コード",
-  "暗証番号",
-  "合言葉",
-  "秘密の質問"
+  "カード確認コード"
 ]
 
-const SENSITIVE_FILLABLE_FIELD_TOKENS = [
+const SECURE_VAULT_FIELD_TOKENS = [
   "card number",
   "cardnumber",
   "card no",
@@ -123,8 +126,12 @@ export const classifyFieldSecurity = (
     return "blocked"
   }
 
-  if (hasIdentityToken(identity, SENSITIVE_FILLABLE_FIELD_TOKENS)) {
-    return "sensitive-fillable"
+  if (hasIdentityToken(identity, SECURE_VAULT_CONFIRM_FIELD_TOKENS)) {
+    return "secure-vault-confirm"
+  }
+
+  if (hasIdentityToken(identity, SECURE_VAULT_FIELD_TOKENS)) {
+    return "secure-vault"
   }
 
   return "normal"
@@ -132,3 +139,9 @@ export const classifyFieldSecurity = (
 
 export const shouldRedactFieldEventValues = (classification: FieldSecurityClassification) =>
   classification !== "normal"
+
+export const isSecureVaultField = (classification: FieldSecurityClassification) =>
+  classification === "secure-vault" || classification === "secure-vault-confirm"
+
+export const requiresSecureAutofillConfirmation = (classification: FieldSecurityClassification) =>
+  classification === "secure-vault-confirm"

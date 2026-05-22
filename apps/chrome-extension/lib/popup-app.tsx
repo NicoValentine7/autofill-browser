@@ -145,7 +145,7 @@ function PopupApp() {
     return nextSnapshot
   }
 
-  const pushSnapshotIfSignedIn = async (nextSnapshot: StorageSnapshot, changedFields: SyncField[] = ["profile", "settings", "domainPolicies"]) => {
+  const pushSnapshotIfSignedIn = async (nextSnapshot: StorageSnapshot, changedFields: SyncField[] = ["profile", "settings", "domainPolicies", "secureVault"]) => {
     if (!nextSnapshot.googleAuthUser) {
       return nextSnapshot
     }
@@ -339,7 +339,7 @@ function PopupApp() {
       return
     }
 
-    await pushSnapshotIfSignedIn(signedInSnapshot, ["profile", "settings", "domainPolicies"])
+    await pushSnapshotIfSignedIn(signedInSnapshot, ["profile", "settings", "domainPolicies", "secureVault"])
     setStatus(`${googleAuthUser.email} でログインしてクラウドへ初期保存したで`)
   }
 

@@ -1,4 +1,5 @@
 import { PROFILE_KEYS, buildFieldDescriptor, buildFieldSignature, createEmptyProfile } from "@autofill-browser/autofill-core"
+import { setImmediate as waitImmediate } from "node:timers/promises"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { createAutofillController } from "../lib/content-controller"
@@ -29,17 +30,57 @@ const derivedProfile = {
 const emptyProfile = Object.fromEntries(PROFILE_KEYS.map((key) => [key, ""])) as typeof profile
 
 const flush = async () => {
-  await Promise.resolve()
-  await Promise.resolve()
+  for (let index = 0; index < 10; index += 1) {
+    await Promise.resolve()
+  }
+  await waitImmediate()
+}
+
+const drainSnapshot = async () => {
+  let snapshot = await getStorageSnapshot()
+  for (let index = 0; index < 10; index += 1) {
+    await vi.runAllTimersAsync()
+    await flush()
+    snapshot = await getStorageSnapshot()
+  }
+  return snapshot
+}
+
+const waitForSnapshot = async (predicate: (snapshot: Awaited<ReturnType<typeof getStorageSnapshot>>) => boolean) => {
+  let snapshot = await getStorageSnapshot()
+  for (let index = 0; index < 20; index += 1) {
+    await vi.runAllTimersAsync()
+    await flush()
+    snapshot = await getStorageSnapshot()
+    if (predicate(snapshot)) {
+      return snapshot
+    }
+  }
+  return snapshot
 }
 
 describe("content-controller", () => {
+  const controllers: Array<ReturnType<typeof createAutofillController>> = []
+  const createController = (...args: Parameters<typeof createAutofillController>) => {
+    const controller = createAutofillController(...args)
+    controllers.push(controller)
+    return controller
+  }
+
   beforeEach(() => {
     vi.useFakeTimers()
     window.history.replaceState({}, "", "/form")
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    for (const controller of controllers) {
+      await controller.flushPendingWrites()
+    }
+    for (const controller of controllers.splice(0)) {
+      controller.dispose()
+    }
+    await vi.runOnlyPendingTimersAsync()
+    await flush()
     vi.useRealTimers()
   })
 
@@ -55,7 +96,7 @@ describe("content-controller", () => {
     ;(globalThis as { chrome: typeof chrome }).chrome = chromeMock as unknown as typeof chrome
     document.body.innerHTML = `<input id="email" name="email" />`
 
-    const controller = createAutofillController({
+    const controller = createController({
       chromeApi: chromeMock as unknown as typeof chrome,
       debounceMs: 10
     })
@@ -65,7 +106,7 @@ describe("content-controller", () => {
     await flush()
 
     expect((document.getElementById("email") as HTMLInputElement).value).toBe("taro@example.com")
-    const snapshot = await getStorageSnapshot()
+    const snapshot = await waitForSnapshot((nextSnapshot) => Object.values(nextSnapshot.secureVaultValues).length >= 2)
     expect(snapshot.eventLog.some((entry: { type: string }) => entry.type === "autofill_run")).toBe(true)
     expect(snapshot.eventLog.some((entry: { type: string }) => entry.type === "field_filled")).toBe(true)
   })
@@ -77,7 +118,7 @@ describe("content-controller", () => {
     ;(globalThis as { chrome: typeof chrome }).chrome = chromeMock as unknown as typeof chrome
     document.body.innerHTML = `<input id="email" name="email" value="already@example.com" />`
 
-    const controller = createAutofillController({
+    const controller = createController({
       chromeApi: chromeMock as unknown as typeof chrome,
       debounceMs: 10
     })
@@ -100,7 +141,7 @@ describe("content-controller", () => {
       <input id="email-otp" name="email_otp" autocomplete="one-time-code" />
     `
 
-    const controller = createAutofillController({
+    const controller = createController({
       chromeApi: chromeMock as unknown as typeof chrome,
       debounceMs: 10
     })
@@ -113,7 +154,10 @@ describe("content-controller", () => {
     expect((document.getElementById("apbct") as HTMLInputElement).value).toBe("")
     expect((document.getElementById("email-otp") as HTMLInputElement).value).toBe("")
 
-    const snapshot = await getStorageSnapshot()
+    const snapshot = await waitForSnapshot((nextSnapshot) => {
+      const values = Object.values(nextSnapshot.secureVaultValues)
+      return values.includes("4111111111111111") && values.includes("12/30")
+    })
     expect(snapshot.eventLog.some((entry: { type: string }) => entry.type === "field_filled")).toBe(false)
   })
 
@@ -124,7 +168,7 @@ describe("content-controller", () => {
     ;(globalThis as { chrome: typeof chrome }).chrome = chromeMock as unknown as typeof chrome
     document.body.innerHTML = `<div id="mount"></div>`
 
-    const controller = createAutofillController({
+    const controller = createController({
       chromeApi: chromeMock as unknown as typeof chrome,
       debounceMs: 10
     })
@@ -146,7 +190,7 @@ describe("content-controller", () => {
     ;(globalThis as { chrome: typeof chrome }).chrome = chromeMock as unknown as typeof chrome
     document.body.innerHTML = `<input id="company" name="company" />`
 
-    const controller = createAutofillController({
+    const controller = createController({
       chromeApi: chromeMock as unknown as typeof chrome,
       debounceMs: 10
     })
@@ -163,7 +207,7 @@ describe("content-controller", () => {
     await vi.runAllTimersAsync()
     await flush()
 
-    const snapshot = await getStorageSnapshot()
+    const snapshot = await waitForSnapshot((nextSnapshot) => Object.values(nextSnapshot.secureVaultValues).includes("123"))
     const memoryEntry = Object.values(snapshot.fieldMemory)[0] as { lastUserValue?: string } | undefined
 
     expect(memoryEntry?.lastUserValue).toBe("OpenAI Japan合同会社")
@@ -180,7 +224,7 @@ describe("content-controller", () => {
       <input id="email" name="email" />
     `
 
-    const controller = createAutofillController({
+    const controller = createController({
       chromeApi: chromeMock as unknown as typeof chrome,
       debounceMs: 10
     })
@@ -197,7 +241,7 @@ describe("content-controller", () => {
     await vi.runAllTimersAsync()
     await flush()
 
-    const snapshot = await getStorageSnapshot()
+    const snapshot = await drainSnapshot()
     const memoryEntry = Object.values(snapshot.fieldMemory)[0] as { lastUserValue?: string; profileKey?: string } | undefined
 
     expect(snapshot.profile.email).toBe("learned@example.com")
@@ -218,7 +262,7 @@ describe("content-controller", () => {
       <input id="member-id" name="member_id" />
     `
 
-    const learningController = createAutofillController({
+    const learningController = createController({
       chromeApi: chromeMock as unknown as typeof chrome,
       debounceMs: 10
     })
@@ -247,7 +291,7 @@ describe("content-controller", () => {
       <input id="member-id" name="member_id" />
     `
 
-    const autofillController = createAutofillController({
+    const autofillController = createController({
       chromeApi: chromeMock as unknown as typeof chrome,
       debounceMs: 10
     })
@@ -271,7 +315,7 @@ describe("content-controller", () => {
       <input id="account-number" name="INPUT_FORM:INPUT_ACCOUNT_NUMBER" />
     `
 
-    const controller = createAutofillController({
+    const controller = createController({
       chromeApi: chromeMock as unknown as typeof chrome,
       debounceMs: 10
     })
@@ -292,12 +336,14 @@ describe("content-controller", () => {
 
     await vi.runAllTimersAsync()
     await flush()
+    await controller.flushPendingWrites()
 
     const snapshot = await getStorageSnapshot()
-    const learnedValues = Object.values(snapshot.fieldMemory).map((entry) => entry.lastUserValue)
+    const learnedValues = Object.values(snapshot.secureVaultValues)
     const learnedEvents = snapshot.eventLog.filter((entry: { type: string }) => entry.type === "field_learned_from_user")
 
     expect(learnedValues).toEqual(expect.arrayContaining(["235", "1234567"]))
+    expect(snapshot.fieldMemory).toEqual({})
     expect(learnedEvents).toHaveLength(2)
     expect(learnedEvents.every((entry) => entry.nextValue === undefined && entry.detail?.includes("values:redacted"))).toBe(true)
   })
@@ -314,7 +360,7 @@ describe("content-controller", () => {
       <input id="card-exp" name="card_exp" autocomplete="cc-exp" />
     `
 
-    const controller = createAutofillController({
+    const controller = createController({
       chromeApi: chromeMock as unknown as typeof chrome,
       debounceMs: 10
     })
@@ -335,12 +381,14 @@ describe("content-controller", () => {
 
     await vi.runAllTimersAsync()
     await flush()
+    await controller.flushPendingWrites()
 
     const snapshot = await getStorageSnapshot()
-    const learnedValues = Object.values(snapshot.fieldMemory).map((entry) => entry.lastUserValue)
+    const learnedValues = Object.values(snapshot.secureVaultValues)
     const learnedEvents = snapshot.eventLog.filter((entry: { type: string }) => entry.type === "field_learned_from_user")
 
     expect(learnedValues).toEqual(expect.arrayContaining(["4111111111111111", "12/30"]))
+    expect(snapshot.fieldMemory).toEqual({})
     expect(learnedEvents).toHaveLength(2)
     expect(learnedEvents.every((entry) => entry.nextValue === undefined && entry.detail?.includes("values:redacted"))).toBe(true)
 
@@ -351,7 +399,7 @@ describe("content-controller", () => {
       <input id="card-exp" name="card_exp" autocomplete="cc-exp" />
     `
 
-    const autofillController = createAutofillController({
+    const autofillController = createController({
       chromeApi: chromeMock as unknown as typeof chrome,
       debounceMs: 10
     })
@@ -369,7 +417,7 @@ describe("content-controller", () => {
     expect(filledEvents.every((entry) => entry.nextValue === undefined && entry.detail?.includes("values:redacted"))).toBe(true)
   })
 
-  it("does not learn card security codes", async () => {
+  it("learns card security codes into the secure vault and fills them only from popup action", async () => {
     const { chromeMock } = createChromeMock({
       autofillProfile: emptyProfile
     })
@@ -379,7 +427,7 @@ describe("content-controller", () => {
       <input id="cvv" name="card_cvv" autocomplete="cc-csc" />
     `
 
-    const controller = createAutofillController({
+    const controller = createController({
       chromeApi: chromeMock as unknown as typeof chrome,
       debounceMs: 10
     })
@@ -395,10 +443,32 @@ describe("content-controller", () => {
 
     await vi.runAllTimersAsync()
     await flush()
+    await controller.flushPendingWrites()
 
     const snapshot = await getStorageSnapshot()
+    const learnedEvents = snapshot.eventLog.filter((entry: { type: string }) => entry.type === "field_learned_from_user")
+    expect(Object.values(snapshot.secureVaultValues)).toEqual(["123"])
     expect(snapshot.fieldMemory).toEqual({})
-    expect(snapshot.eventLog.some((entry: { type: string }) => entry.type === "field_learned_from_user")).toBe(false)
+    expect(learnedEvents).toHaveLength(1)
+    expect(learnedEvents[0]?.nextValue).toBeUndefined()
+    expect(learnedEvents[0]?.detail).toContain("values:redacted")
+
+    document.body.innerHTML = `
+      <label for="cvv">Security code</label>
+      <input id="cvv" name="card_cvv" autocomplete="cc-csc" />
+    `
+
+    const automaticController = createController({
+      chromeApi: chromeMock as unknown as typeof chrome,
+      debounceMs: 10
+    })
+    await automaticController.initialize()
+    await vi.runAllTimersAsync()
+    await flush()
+    expect((document.getElementById("cvv") as HTMLInputElement).value).toBe("")
+
+    await automaticController.runAutofill("popup")
+    expect((document.getElementById("cvv") as HTMLInputElement).value).toBe("123")
   })
 
   it("does not learn dangerous manual inputs", async () => {
@@ -416,7 +486,7 @@ describe("content-controller", () => {
       <input id="secret-word" name="secret_word" />
     `
 
-    const controller = createAutofillController({
+    const controller = createController({
       chromeApi: chromeMock as unknown as typeof chrome,
       debounceMs: 10
     })
@@ -452,6 +522,7 @@ describe("content-controller", () => {
 
     await vi.runAllTimersAsync()
     await flush()
+    await controller.flushPendingWrites()
 
     const snapshot = await getStorageSnapshot()
     expect(snapshot.fieldMemory).toEqual({})
@@ -474,7 +545,7 @@ describe("content-controller", () => {
       <input id="address2" name="billing[address2]" />
     `
 
-    const controller = createAutofillController({
+    const controller = createController({
       chromeApi: chromeMock as unknown as typeof chrome,
       debounceMs: 10
     })
@@ -514,7 +585,7 @@ describe("content-controller", () => {
     })
     ;(globalThis as { chrome: typeof chrome }).chrome = chromeMock as unknown as typeof chrome
 
-    const controller = createAutofillController({
+    const controller = createController({
       chromeApi: chromeMock as unknown as typeof chrome,
       debounceMs: 10
     })
@@ -541,7 +612,7 @@ describe("content-controller", () => {
       field.value = `${field.value}${field.value}`
     })
 
-    const controller = createAutofillController({
+    const controller = createController({
       chromeApi: chromeMock as unknown as typeof chrome,
       debounceMs: 10
     })
@@ -570,7 +641,7 @@ describe("content-controller", () => {
     ;(globalThis as { chrome: typeof chrome }).chrome = blacklistChrome.chromeMock as unknown as typeof chrome
     document.body.innerHTML = `<input id="email-blacklist" name="email" />`
 
-    const blacklistController = createAutofillController({
+    const blacklistController = createController({
       chromeApi: blacklistChrome.chromeMock as unknown as typeof chrome,
       debounceMs: 10
     })
@@ -591,7 +662,7 @@ describe("content-controller", () => {
     ;(globalThis as { chrome: typeof chrome }).chrome = whitelistChrome.chromeMock as unknown as typeof chrome
     document.body.innerHTML = `<input id="email-whitelist" name="email" />`
 
-    const whitelistController = createAutofillController({
+    const whitelistController = createController({
       chromeApi: whitelistChrome.chromeMock as unknown as typeof chrome,
       debounceMs: 10
     })

@@ -90,7 +90,7 @@ type AuthContext =
       user: AuthUser
     }
 
-type SyncField = "profile" | "settings" | "domainPolicies"
+type SyncField = "profile" | "settings" | "domainPolicies" | "secureVault"
 
 type SyncedSnapshot = {
   schemaVersion: 1
@@ -101,6 +101,8 @@ type SyncedSnapshot = {
     minMatchCount: number
   }
   domainPolicies: Record<string, "default" | "whitelist" | "blacklist">
+  secureVault?: unknown
+  secureVaultKey?: unknown
   updatedAt: string
   revision?: number
   baseRevision?: number
@@ -120,6 +122,7 @@ type SyncSnapshotRow = {
   device_id?: string | null
   changed_fields_json?: string | null
   encryption_version?: number | null
+  secure_vault_json?: string | null
 }
 
 type SyncSnapshotHistoryRow = SyncSnapshotRow & {
@@ -198,7 +201,7 @@ const html = (markup: string, init: ResponseInit = {}) =>
 const textEncoder = new TextEncoder()
 const textDecoder = new TextDecoder()
 
-const SYNC_FIELDS = ["profile", "settings", "domainPolicies"] as const
+const SYNC_FIELDS = ["profile", "settings", "domainPolicies", "secureVault"] as const
 
 const DEFAULT_REMOTE_BLOCKED_IDENTITY_TOKENS = [
   "security code",
@@ -734,6 +737,13 @@ const isSyncedSnapshot = (value: unknown): value is SyncedSnapshot => {
   const profile = value.profile
   const settings = value.settings
   const domainPolicies = value.domainPolicies
+  const secureVaultPayload =
+    value.secureVault === undefined && value.secureVaultKey === undefined
+      ? undefined
+      : {
+          secureVault: value.secureVault,
+          secureVaultKey: value.secureVaultKey
+        }
 
   return (
     requiredProfileKeys.every((key) => isString(profile[key])) &&
@@ -745,6 +755,7 @@ const isSyncedSnapshot = (value: unknown): value is SyncedSnapshot => {
     Object.values(domainPolicies).every((policy) => policy === "default" || policy === "whitelist" || policy === "blacklist") &&
     optionalString(value.updatedAt) &&
     optionalString(value.deviceId) &&
+    (secureVaultPayload === undefined || JSON.stringify(secureVaultPayload).length <= 128_000) &&
     (value.revision === undefined || (typeof value.revision === "number" && Number.isFinite(value.revision))) &&
     (value.baseRevision === undefined || (typeof value.baseRevision === "number" && Number.isFinite(value.baseRevision))) &&
     (value.changedFields === undefined ||
@@ -784,7 +795,8 @@ const getSyncSnapshotRow = async (env: Env, userId: string) => {
        revision,
        device_id,
        changed_fields_json,
-       encryption_version
+       encryption_version,
+       secure_vault_json
      FROM user_sync_snapshots
      WHERE user_id = ?
      LIMIT 1`
@@ -800,12 +812,17 @@ const decodeSyncSnapshotRow = async (env: Env, row: SyncSnapshotRow): Promise<Sy
   if (!profile) {
     return null
   }
+  const secureVaultPackage = row.secure_vault_json
+    ? await decryptJson<{ secureVault?: unknown; secureVaultKey?: unknown }>(env, row.secure_vault_json)
+    : null
 
   return {
     schemaVersion: 1,
     profile,
     settings: JSON.parse(row.settings_json),
     domainPolicies: JSON.parse(row.domain_policies_json),
+    ...(secureVaultPackage?.secureVault ? { secureVault: secureVaultPackage.secureVault } : {}),
+    ...(secureVaultPackage?.secureVaultKey ? { secureVaultKey: secureVaultPackage.secureVaultKey } : {}),
     updatedAt: row.updated_at,
     revision: normalizeRevision(row.revision),
     deviceId: row.device_id ?? undefined,
@@ -818,6 +835,8 @@ const mergeSnapshots = (remoteSnapshot: SyncedSnapshot, localSnapshot: SyncedSna
   profile: changedFields.includes("profile") ? localSnapshot.profile : remoteSnapshot.profile,
   settings: changedFields.includes("settings") ? localSnapshot.settings : remoteSnapshot.settings,
   domainPolicies: changedFields.includes("domainPolicies") ? localSnapshot.domainPolicies : remoteSnapshot.domainPolicies,
+  secureVault: changedFields.includes("secureVault") ? localSnapshot.secureVault : remoteSnapshot.secureVault,
+  secureVaultKey: changedFields.includes("secureVault") ? localSnapshot.secureVaultKey : remoteSnapshot.secureVaultKey,
   updatedAt: localSnapshot.updatedAt || new Date().toISOString(),
   deviceId: localSnapshot.deviceId,
   changedFields
@@ -836,6 +855,17 @@ const storeSyncSnapshot = async (
   if (!encryptedProfile) {
     return false
   }
+  const secureVaultPackage =
+    payload.secureVault || payload.secureVaultKey
+      ? {
+          secureVault: payload.secureVault ?? null,
+          secureVaultKey: payload.secureVaultKey ?? null
+        }
+      : null
+  const encryptedSecureVault = secureVaultPackage ? await encryptJson(env, secureVaultPackage) : null
+  if (secureVaultPackage && !encryptedSecureVault) {
+    return false
+  }
 
   const deviceId = payload.deviceId ?? null
   const changedFieldsJson = JSON.stringify(changedFields)
@@ -844,6 +874,7 @@ const storeSyncSnapshot = async (
     profileEncrypted: true,
     settings: payload.settings,
     domainPolicies: payload.domainPolicies,
+    secureVaultEncrypted: Boolean(secureVaultPackage),
     updatedAt,
     revision,
     deviceId: payload.deviceId,
@@ -862,8 +893,9 @@ const storeSyncSnapshot = async (
       revision,
       device_id,
       changed_fields_json,
-      encryption_version
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      encryption_version,
+      secure_vault_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       userId,
@@ -876,7 +908,8 @@ const storeSyncSnapshot = async (
       revision,
       deviceId,
       changedFieldsJson,
-      1
+      1,
+      encryptedSecureVault
     )
     .run()
 
@@ -893,10 +926,11 @@ const storeSyncSnapshot = async (
       device_id,
       changed_fields_json,
       encryption_version,
+      secure_vault_json,
       raw_json,
       action,
       created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       crypto.randomUUID(),
@@ -910,6 +944,7 @@ const storeSyncSnapshot = async (
       deviceId,
       changedFieldsJson,
       1,
+      encryptedSecureVault,
       rawJson,
       action,
       new Date().toISOString()
@@ -980,6 +1015,18 @@ const handlePutSyncSettings = async (request: Request, env: Env, auth: AuthConte
     merged = true
   }
 
+  if (existingRow && !changedFields.includes("secureVault") && !snapshotToStore.secureVault && !snapshotToStore.secureVaultKey) {
+    const remoteSnapshot = await decodeSyncSnapshotRow(env, existingRow)
+    if (!remoteSnapshot) {
+      return json({ error: "could not decrypt current snapshot" }, { status: 500 })
+    }
+    snapshotToStore = {
+      ...snapshotToStore,
+      secureVault: remoteSnapshot.secureVault,
+      secureVaultKey: remoteSnapshot.secureVaultKey
+    }
+  }
+
   const revision = existingRevision + 1
   const stored = await storeSyncSnapshot(env, auth.user.id, snapshotToStore, updatedAt, revision, changedFields)
   if (!stored) {
@@ -1032,6 +1079,7 @@ const getSyncHistoryRows = async (env: Env, userId: string | null, limit: number
           device_id,
           changed_fields_json,
           encryption_version,
+          secure_vault_json,
           raw_json,
           action,
           created_at
@@ -1053,6 +1101,7 @@ const getSyncHistoryRows = async (env: Env, userId: string | null, limit: number
           device_id,
           changed_fields_json,
           encryption_version,
+          secure_vault_json,
           raw_json,
           action,
           created_at
@@ -1079,6 +1128,7 @@ const getSyncHistoryRowByRevision = async (env: Env, userId: string, revision: n
       device_id,
       changed_fields_json,
       encryption_version,
+      secure_vault_json,
       raw_json,
       action,
       created_at

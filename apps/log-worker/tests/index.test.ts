@@ -26,6 +26,7 @@ type StoredSyncSnapshotRow = {
   device_id: string | null
   changed_fields_json: string
   encryption_version: number
+  secure_vault_json: string | null
 }
 
 type StoredSyncSnapshotHistoryRow = StoredSyncSnapshotRow & {
@@ -149,7 +150,8 @@ class FakeStatement implements D1PreparedStatement {
         revision: Number(this.values[7] ?? 0),
         device_id: this.values[8] === null ? null : String(this.values[8]),
         changed_fields_json: String(this.values[9] ?? "[]"),
-        encryption_version: Number(this.values[10] ?? 0)
+        encryption_version: Number(this.values[10] ?? 0),
+        secure_vault_json: this.values[11] === null ? null : String(this.values[11])
       }
       const existingIndex = this.db.snapshots.findIndex((existingRow) => existingRow.user_id === row.user_id)
       if (existingIndex >= 0) {
@@ -172,9 +174,10 @@ class FakeStatement implements D1PreparedStatement {
         device_id: this.values[8] === null ? null : String(this.values[8]),
         changed_fields_json: String(this.values[9] ?? "[]"),
         encryption_version: Number(this.values[10] ?? 0),
-        raw_json: String(this.values[11]),
-        action: String(this.values[12]),
-        created_at: String(this.values[13])
+        secure_vault_json: this.values[11] === null ? null : String(this.values[11]),
+        raw_json: String(this.values[12]),
+        action: String(this.values[13]),
+        created_at: String(this.values[14])
       }
       const existingIndex = this.db.snapshotHistory.findIndex((existingRow) => existingRow.id === row.id)
       if (existingIndex >= 0) {
@@ -609,6 +612,90 @@ describe("log-worker", () => {
     expect(env.DB.snapshots[0]?.encryption_version).toBe(1)
     expect(env.DB.snapshotHistory).toHaveLength(1)
     expect(env.DB.snapshotHistory[0]?.action).toBe("save")
+  })
+
+  it("stores secure vault sync data encrypted and restores it", async () => {
+    const env = createEnv()
+    mockGoogleTokenInfo()
+    const snapshot = {
+      schemaVersion: 1,
+      profile: {
+        familyName: "",
+        givenName: "",
+        fullName: "",
+        email: "",
+        phone: "",
+        organization: "",
+        postalCode: "",
+        prefecture: "",
+        city: "",
+        addressLine1: "",
+        addressLine2: ""
+      },
+      settings: {
+        enabled: true,
+        observeDynamicForms: true,
+        minMatchCount: 1
+      },
+      domainPolicies: {},
+      secureVault: {
+        schemaVersion: 1,
+        encryptionVersion: 1,
+        entries: {
+          "example.com::field": {
+            hostname: "example.com",
+            fieldSignature: "field",
+            kind: "payment-card",
+            encryptedValue: {
+              schemaVersion: 1,
+              algorithm: "AES-GCM",
+              iv: "iv",
+              ciphertext: "4111111111111111"
+            },
+            timesAutofilled: 0,
+            timesCorrected: 0,
+            timesLearned: 1,
+            createdAt: "2026-05-21T00:00:00.000Z",
+            updatedAt: "2026-05-21T00:00:00.000Z"
+          }
+        }
+      },
+      secureVaultKey: {
+        schemaVersion: 1,
+        keyId: "vault-key",
+        algorithm: "AES-GCM",
+        rawKey: "vault-raw-key",
+        createdAt: "2026-05-21T00:00:00.000Z"
+      },
+      updatedAt: "2026-05-21T00:00:00.000Z",
+      baseRevision: 0,
+      deviceId: "device-a",
+      changedFields: ["secureVault"]
+    }
+
+    const putResponse = await worker.fetch(
+      new Request("https://logs.example.com/me/settings", {
+        method: "PUT",
+        headers: googleHeaders,
+        body: JSON.stringify(snapshot)
+      }),
+      env
+    )
+    const getResponse = await worker.fetch(
+      new Request("https://logs.example.com/me/settings", {
+        headers: googleHeaders
+      }),
+      env
+    )
+    const body = (await getResponse.json()) as { snapshot: typeof snapshot & { revision: number } }
+
+    expect(putResponse.status).toBe(200)
+    expect(getResponse.status).toBe(200)
+    expect(body.snapshot.secureVaultKey.keyId).toBe("vault-key")
+    expect(body.snapshot.secureVault.entries["example.com::field"].kind).toBe("payment-card")
+    expect(env.DB.snapshots[0]?.secure_vault_json).toContain('"encrypted":true')
+    expect(env.DB.snapshots[0]?.secure_vault_json).not.toContain("4111111111111111")
+    expect(env.DB.snapshots[0]?.raw_json).not.toContain("vault-raw-key")
   })
 
   it("merges disjoint sync changes and rejects overlapping stale changes", async () => {

@@ -7,6 +7,7 @@ import {
 import { describe, expect, it } from "vitest"
 
 import { collectAutofillCandidates } from "../lib/autofill-engine"
+import { createEmptySecureVault, getSecureVaultEntryKey } from "../lib/secure-vault"
 import type { StorageSnapshot } from "../lib/storage"
 
 const profile = {
@@ -34,6 +35,8 @@ const createSnapshot = (): StorageSnapshot => ({
   },
   domainPolicies: {},
   fieldMemory: {},
+  secureVault: createEmptySecureVault(),
+  secureVaultValues: {},
   eventLog: [],
   accountSync: {}
 })
@@ -280,40 +283,10 @@ describe("autofill-engine", () => {
     const cardNameSignature = buildFieldSignature(buildFieldDescriptor(cardName))
     const snapshot = createSnapshot()
     snapshot.profile = createEmptyProfile()
-    snapshot.fieldMemory = {
-      [`example.com::${cardNumberSignature}`]: {
-        hostname: "example.com",
-        fieldSignature: cardNumberSignature,
-        learnedLabel: "Card number",
-        lastAutofilledValue: "",
-        lastUserValue: "4111111111111111",
-        timesAutofilled: 0,
-        timesCorrected: 0,
-        timesLearned: 1,
-        updatedAt: new Date().toISOString()
-      },
-      [`example.com::${cardExpSignature}`]: {
-        hostname: "example.com",
-        fieldSignature: cardExpSignature,
-        learnedLabel: "Expiry",
-        lastAutofilledValue: "",
-        lastUserValue: "12/30",
-        timesAutofilled: 0,
-        timesCorrected: 0,
-        timesLearned: 1,
-        updatedAt: new Date().toISOString()
-      },
-      [`example.com::${cardNameSignature}`]: {
-        hostname: "example.com",
-        fieldSignature: cardNameSignature,
-        learnedLabel: "Name on card",
-        lastAutofilledValue: "",
-        lastUserValue: "HANAKO YAMADA",
-        timesAutofilled: 0,
-        timesCorrected: 0,
-        timesLearned: 1,
-        updatedAt: new Date().toISOString()
-      }
+    snapshot.secureVaultValues = {
+      [getSecureVaultEntryKey("example.com", cardNumberSignature)]: "4111111111111111",
+      [getSecureVaultEntryKey("example.com", cardExpSignature)]: "12/30",
+      [getSecureVaultEntryKey("example.com", cardNameSignature)]: "HANAKO YAMADA"
     }
 
     const values = valueById(snapshot)
@@ -325,7 +298,7 @@ describe("autofill-engine", () => {
     })
   })
 
-  it("does not let card security code memory re-enable cvv fields", () => {
+  it("allows card security code candidates only as secure-vault confirmation fields", () => {
     document.body.innerHTML = `
       <label for="cvv">Security code</label>
       <input id="cvv" name="card_cvv" autocomplete="cc-csc" />
@@ -346,7 +319,12 @@ describe("autofill-engine", () => {
       }
     }
 
-    expect(collectAutofillCandidates(document, snapshot, window.location)).toEqual([])
+    const [candidate] = collectAutofillCandidates(document, snapshot, window.location)
+    expect(candidate).toMatchObject({
+      rawValue: "123",
+      securityClassification: "secure-vault-confirm",
+      secureVaultKind: "card-security-code"
+    })
   })
 
   it("does not let memory re-enable pin or secret answer fields", () => {

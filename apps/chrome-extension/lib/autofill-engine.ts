@@ -14,8 +14,10 @@ import {
   classifyFieldSecurity,
   getDescriptorIdentity,
   hasIdentityToken,
+  isSecureVaultField,
   type FieldSecurityClassification
 } from "./field-security"
+import { classifySecureVaultKind, getSecureVaultEntryKey, type SecureVaultEntry, type SecureVaultEntryKind } from "./secure-vault"
 import type { StorageSnapshot } from "./storage"
 
 export type FieldElement = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
@@ -26,6 +28,9 @@ export type AutofillCandidate = {
   fieldSignature: string
   profileKey?: ProfileKey
   fieldMemoryEntry?: FieldMemoryEntry
+  secureVaultEntry?: SecureVaultEntry
+  secureVaultKind?: SecureVaultEntryKind
+  usesLegacyMemoryValue: boolean
   securityClassification: FieldSecurityClassification
   rawValue: string
   appliedValue: string
@@ -136,6 +141,18 @@ const resolveMemoryEntry = (
   fieldSignature: string
 ) => snapshot.fieldMemory[`${descriptor.hostname}::${fieldSignature}`]
 
+const resolveSecureVaultEntry = (
+  snapshot: StorageSnapshot,
+  descriptor: FieldDescriptor,
+  fieldSignature: string
+) => snapshot.secureVault.entries[getSecureVaultEntryKey(descriptor.hostname, fieldSignature)]
+
+const resolveSecureVaultValue = (
+  snapshot: StorageSnapshot,
+  descriptor: FieldDescriptor,
+  fieldSignature: string
+) => snapshot.secureVaultValues[getSecureVaultEntryKey(descriptor.hostname, fieldSignature)]?.trim() ?? ""
+
 const resolveProfileKeyForDescriptor = (descriptor: FieldDescriptor, memoryEntry?: FieldMemoryEntry) =>
   hasLearnedCorrection(memoryEntry) ? memoryEntry?.profileKey ?? matchProfileKey(descriptor) : matchProfileKey(descriptor)
 
@@ -145,6 +162,9 @@ export type LearnableFieldDescriptor = {
   profileKey: ProfileKey | null
   securityClassification: FieldSecurityClassification
   fieldMemoryEntry?: FieldMemoryEntry
+  secureVaultEntry?: SecureVaultEntry
+  secureVaultKind?: SecureVaultEntryKind
+  secureVaultValue: string
 }
 
 export const describeLearnableField = (
@@ -164,13 +184,19 @@ export const describeLearnableField = (
 
   const fieldSignature = buildFieldSignature(descriptor)
   const fieldMemoryEntry = resolveMemoryEntry(snapshot, descriptor, fieldSignature)
+  const secureVaultKind = classifySecureVaultKind(descriptor, securityClassification) ?? undefined
+  const secureVaultEntry = secureVaultKind ? resolveSecureVaultEntry(snapshot, descriptor, fieldSignature) : undefined
+  const secureVaultValue = secureVaultKind ? resolveSecureVaultValue(snapshot, descriptor, fieldSignature) : ""
 
   return {
     descriptor,
     fieldSignature,
     profileKey: resolveProfileKeyForDescriptor(descriptor, fieldMemoryEntry),
     securityClassification,
-    fieldMemoryEntry
+    fieldMemoryEntry,
+    secureVaultEntry,
+    secureVaultKind,
+    secureVaultValue
   }
 }
 
@@ -362,9 +388,15 @@ const resolveRawValue = (
   profileKey: ProfileKey | undefined,
   profile: StorageSnapshot["profile"],
   memoryEntry: FieldMemoryEntry | undefined,
+  secureVaultValue: string | undefined,
+  securityClassification: FieldSecurityClassification,
   context: CandidateContext
 ) => {
   const rememberedValue = hasLearnedCorrection(memoryEntry) ? memoryEntry?.lastUserValue.trim() || "" : ""
+  if (isSecureVaultField(securityClassification)) {
+    return secureVaultValue || rememberedValue
+  }
+
   if (!profileKey) {
     return rememberedValue
   }
@@ -404,9 +436,19 @@ export const resolveAppliedValue = (
   profileKey: ProfileKey | undefined,
   profile: StorageSnapshot["profile"],
   memoryEntry: FieldMemoryEntry | undefined,
+  secureVaultValue: string | undefined,
+  securityClassification: FieldSecurityClassification,
   context: CandidateContext
 ) => {
-  const rawValue = resolveRawValue(descriptor, profileKey, profile, memoryEntry, context)
+  const rawValue = resolveRawValue(
+    descriptor,
+    profileKey,
+    profile,
+    memoryEntry,
+    secureVaultValue,
+    securityClassification,
+    context
+  )
   if (!rawValue) {
     return null
   }
@@ -448,7 +490,8 @@ export const collectAutofillCandidates = (
     }
 
     const hasLearnedValue = hasLearnedCorrection(learnableField.fieldMemoryEntry)
-    if (!learnableField.profileKey && !hasLearnedValue) {
+    const hasSecureVaultValue = Boolean(learnableField.secureVaultValue)
+    if (!learnableField.profileKey && !hasLearnedValue && !hasSecureVaultValue) {
       continue
     }
 
@@ -457,6 +500,9 @@ export const collectAutofillCandidates = (
       descriptor: learnableField.descriptor,
       fieldSignature: learnableField.fieldSignature,
       fieldMemoryEntry: learnableField.fieldMemoryEntry,
+      secureVaultEntry: learnableField.secureVaultEntry,
+      secureVaultKind: learnableField.secureVaultKind,
+      usesLegacyMemoryValue: isSecureVaultField(learnableField.securityClassification) && !hasSecureVaultValue && hasLearnedValue,
       profileKey: learnableField.profileKey ?? undefined,
       securityClassification: learnableField.securityClassification
     })
@@ -480,6 +526,8 @@ export const collectAutofillCandidates = (
       draft.profileKey,
       snapshot.profile,
       draft.fieldMemoryEntry,
+      draft.secureVaultKind ? resolveSecureVaultValue(snapshot, draft.descriptor, draft.fieldSignature) : undefined,
+      draft.securityClassification,
       context
     )
 
