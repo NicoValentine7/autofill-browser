@@ -17,6 +17,16 @@ const snapshot: StorageSnapshot = {
   },
   fieldMemory: {},
   secureVault: createEmptySecureVault(),
+  secureVaultRecovery: {
+    schemaVersion: 1,
+    keyId: "vault-key-1",
+    algorithm: "PBKDF2-SHA256/AES-GCM",
+    iterations: 250000,
+    salt: "salt",
+    iv: "iv",
+    ciphertext: "wrapped-key",
+    createdAt: "2026-05-22T00:00:00.000Z"
+  },
   secureVaultValues: {},
   eventLog: [],
   accountSync: {
@@ -48,11 +58,20 @@ describe("account-sync", () => {
     })
     expect(syncedSnapshot.settings).not.toHaveProperty("cloudLogSync")
     expect(syncedSnapshot.secureVault?.entries).toEqual({})
+    expect(syncedSnapshot.secureVaultRecovery?.ciphertext).toBe("wrapped-key")
     expect(syncedSnapshot).not.toHaveProperty("secureVaultKey")
     expect(syncedSnapshot).toMatchObject({
       baseRevision: 3,
       deviceId: "device-a",
       changedFields: ["profile", "settings", "domainPolicies", "secureVault"]
     })
+  })
+
+  it("omits secure vault payload when secureVault was not changed", () => {
+    const syncedSnapshot = buildSyncedSnapshot(snapshot, ["profile"])
+
+    expect(syncedSnapshot).not.toHaveProperty("secureVault")
+    expect(syncedSnapshot).not.toHaveProperty("secureVaultRecovery")
+    expect(syncedSnapshot.changedFields).toEqual(["profile"])
   })
 })

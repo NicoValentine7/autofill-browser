@@ -102,6 +102,7 @@ type SyncedSnapshot = {
   }
   domainPolicies: Record<string, "default" | "whitelist" | "blacklist">
   secureVault?: unknown
+  secureVaultRecovery?: unknown
   updatedAt: string
   revision?: number
   baseRevision?: number
@@ -111,7 +112,20 @@ type SyncedSnapshot = {
 
 type SecureVaultPackage = {
   secureVault?: unknown
+  secureVaultRecovery?: unknown
   secureVaultKey?: unknown
+}
+
+const containsSecureVaultKeyProperty = (value: unknown, depth = 0): boolean => {
+  if (!isRecord(value) || depth > 8) {
+    return false
+  }
+
+  if (Object.prototype.hasOwnProperty.call(value, "secureVaultKey")) {
+    return true
+  }
+
+  return Object.values(value).some((child) => containsSecureVaultKeyProperty(child, depth + 1))
 }
 
 type DecodedSyncSnapshot = {
@@ -743,10 +757,20 @@ const isSyncedSnapshot = (value: unknown): value is SyncedSnapshot => {
     return false
   }
 
+  if (containsSecureVaultKeyProperty(value)) {
+    return false
+  }
+
   const profile = value.profile
   const settings = value.settings
   const domainPolicies = value.domainPolicies
-  const secureVaultPayload = value.secureVault === undefined ? undefined : value.secureVault
+  const secureVaultPayload =
+    value.secureVault === undefined && value.secureVaultRecovery === undefined
+      ? undefined
+      : {
+          secureVault: value.secureVault,
+          secureVaultRecovery: value.secureVaultRecovery
+        }
 
   return (
     requiredProfileKeys.every((key) => isString(profile[key])) &&
@@ -810,6 +834,27 @@ const getSyncSnapshotRow = async (env: Env, userId: string) => {
   return result.results?.[0] ?? null
 }
 
+const getAllSyncSnapshotRows = async (env: Env) => {
+  const result = await env.DB.prepare(
+    `SELECT
+       user_id,
+       schema_version,
+       profile_json,
+       settings_json,
+       domain_policies_json,
+       updated_at,
+       raw_json,
+       revision,
+       device_id,
+       changed_fields_json,
+       encryption_version,
+       secure_vault_json
+     FROM user_sync_snapshots`
+  ).all<SyncSnapshotRow>()
+
+  return result.results ?? []
+}
+
 const decodeSyncSnapshotRow = async (env: Env, row: SyncSnapshotRow): Promise<DecodedSyncSnapshot | null> => {
   const profile = await decryptJson<Record<string, string>>(env, row.profile_json)
   if (!profile) {
@@ -825,6 +870,7 @@ const decodeSyncSnapshotRow = async (env: Env, row: SyncSnapshotRow): Promise<De
       settings: JSON.parse(row.settings_json),
       domainPolicies: JSON.parse(row.domain_policies_json),
       ...(secureVaultPackage?.secureVault ? { secureVault: secureVaultPackage.secureVault } : {}),
+      ...(secureVaultPackage?.secureVaultRecovery ? { secureVaultRecovery: secureVaultPackage.secureVaultRecovery } : {}),
       updatedAt: row.updated_at,
       revision: normalizeRevision(row.revision),
       deviceId: row.device_id ?? undefined,
@@ -834,18 +880,47 @@ const decodeSyncSnapshotRow = async (env: Env, row: SyncSnapshotRow): Promise<De
   }
 }
 
-const scrubLegacySecureVaultKey = async (env: Env, row: SyncSnapshotRow, decoded: DecodedSyncSnapshot) => {
+const buildSecureVaultPackageFromSnapshot = (snapshot: SyncedSnapshot) => {
+  if (snapshot.secureVault) {
+    return {
+      secureVault: snapshot.secureVault,
+      ...(snapshot.secureVaultRecovery ? { secureVaultRecovery: snapshot.secureVaultRecovery } : {})
+    }
+  }
+
+  if (snapshot.secureVaultRecovery) {
+    return {
+      secureVaultRecovery: snapshot.secureVaultRecovery
+    }
+  }
+
+  return null
+}
+
+const scrubLegacySecureVaultKey = async (
+  env: Env,
+  row: SyncSnapshotRow | SyncSnapshotHistoryRow,
+  decoded: DecodedSyncSnapshot,
+  table: "current" | "history"
+) => {
   if (!decoded.hasLegacySecureVaultKey) {
     return
   }
 
-  const secureVaultPackage = decoded.snapshot.secureVault
-    ? {
-        secureVault: decoded.snapshot.secureVault
-      }
-    : null
+  const secureVaultPackage = buildSecureVaultPackageFromSnapshot(decoded.snapshot)
   const encryptedSecureVault = secureVaultPackage ? await encryptJson(env, secureVaultPackage) : null
   if (secureVaultPackage && !encryptedSecureVault) {
+    return
+  }
+
+  if (table === "history") {
+    await env.DB.prepare(
+      `UPDATE user_sync_snapshot_history
+       SET secure_vault_json = ?
+       WHERE id = ?`
+    )
+      .bind(encryptedSecureVault, (row as SyncSnapshotHistoryRow).id)
+      .run()
     return
   }
 
@@ -864,6 +939,7 @@ const mergeSnapshots = (remoteSnapshot: SyncedSnapshot, localSnapshot: SyncedSna
   settings: changedFields.includes("settings") ? localSnapshot.settings : remoteSnapshot.settings,
   domainPolicies: changedFields.includes("domainPolicies") ? localSnapshot.domainPolicies : remoteSnapshot.domainPolicies,
   secureVault: changedFields.includes("secureVault") ? localSnapshot.secureVault : remoteSnapshot.secureVault,
+  secureVaultRecovery: changedFields.includes("secureVault") ? localSnapshot.secureVaultRecovery : remoteSnapshot.secureVaultRecovery,
   updatedAt: localSnapshot.updatedAt || new Date().toISOString(),
   deviceId: localSnapshot.deviceId,
   changedFields
@@ -883,10 +959,8 @@ const storeSyncSnapshot = async (
     return false
   }
   const secureVaultPackage =
-    payload.secureVault
-      ? {
-          secureVault: payload.secureVault
-        }
+    payload.secureVault || payload.secureVaultRecovery
+      ? buildSecureVaultPackageFromSnapshot(payload)
       : null
   const encryptedSecureVault = secureVaultPackage ? await encryptJson(env, secureVaultPackage) : null
   if (secureVaultPackage && !encryptedSecureVault) {
@@ -1041,14 +1115,15 @@ const handlePutSyncSettings = async (request: Request, env: Env, auth: AuthConte
     merged = true
   }
 
-  if (existingRow && !changedFields.includes("secureVault") && !snapshotToStore.secureVault) {
+  if (existingRow && !changedFields.includes("secureVault") && !snapshotToStore.secureVault && !snapshotToStore.secureVaultRecovery) {
     const remoteSnapshot = await decodeSyncSnapshotRow(env, existingRow)
     if (!remoteSnapshot) {
       return json({ error: "could not decrypt current snapshot" }, { status: 500 })
     }
     snapshotToStore = {
       ...snapshotToStore,
-      secureVault: remoteSnapshot.snapshot.secureVault
+      secureVault: remoteSnapshot.snapshot.secureVault,
+      secureVaultRecovery: remoteSnapshot.snapshot.secureVaultRecovery
     }
   }
 
@@ -1083,7 +1158,7 @@ const handleGetSyncSettings = async (env: Env, auth: AuthContext) => {
   if (!decoded) {
     return json({ error: "could not decrypt current snapshot" }, { status: 500 })
   }
-  await scrubLegacySecureVaultKey(env, row, decoded)
+  await scrubLegacySecureVaultKey(env, row, decoded, "current")
 
   return json({
     snapshot: decoded.snapshot
@@ -1140,6 +1215,30 @@ const getSyncHistoryRows = async (env: Env, userId: string | null, limit: number
   return result.results ?? []
 }
 
+const getAllSyncHistoryRows = async (env: Env) => {
+  const result = await env.DB.prepare(
+    `SELECT
+      id,
+      user_id,
+      revision,
+      schema_version,
+      profile_json,
+      settings_json,
+      domain_policies_json,
+      updated_at,
+      device_id,
+      changed_fields_json,
+      encryption_version,
+      secure_vault_json,
+      raw_json,
+      action,
+      created_at
+    FROM user_sync_snapshot_history`
+  ).all<SyncSnapshotHistoryRow>()
+
+  return result.results ?? []
+}
+
 const getSyncHistoryRowByRevision = async (env: Env, userId: string, revision: number) => {
   const result = await env.DB.prepare(
     `SELECT
@@ -1173,6 +1272,7 @@ const decodeSyncHistoryRow = async (env: Env, row: SyncSnapshotHistoryRow) => {
   if (!decoded) {
     return null
   }
+  await scrubLegacySecureVaultKey(env, row, decoded, "history")
 
   return {
     ...decoded.snapshot,
@@ -1201,6 +1301,37 @@ const handleGetSyncHistory = async (request: Request, env: Env, auth: AuthContex
 
   return json({
     history: rows.map(summarizeHistoryRow)
+  })
+}
+
+const handlePostSyncVaultScrub = async (env: Env) => {
+  const currentRows = await getAllSyncSnapshotRows(env)
+  const historyRows = await getAllSyncHistoryRows(env)
+  let currentScrubbed = 0
+  let historyScrubbed = 0
+
+  for (const row of currentRows) {
+    const decoded = await decodeSyncSnapshotRow(env, row)
+    if (decoded?.hasLegacySecureVaultKey) {
+      await scrubLegacySecureVaultKey(env, row, decoded, "current")
+      currentScrubbed += 1
+    }
+  }
+
+  for (const row of historyRows) {
+    const decoded = await decodeSyncSnapshotRow(env, row)
+    if (decoded?.hasLegacySecureVaultKey) {
+      await scrubLegacySecureVaultKey(env, row, decoded, "history")
+      historyScrubbed += 1
+    }
+  }
+
+  return json({
+    ok: true,
+    currentRows: currentRows.length,
+    historyRows: historyRows.length,
+    currentScrubbed,
+    historyScrubbed
   })
 }
 
@@ -1749,7 +1880,7 @@ const handleRequest = async (request: Request, env: Env) => {
     "/auth/me",
     "/sync/settings"
   ])
-  const adminRoutes = new Set(["/admin/logs", "/admin/rules", "/admin/log-analysis", "/admin/sync-history"])
+  const adminRoutes = new Set(["/admin/logs", "/admin/rules", "/admin/log-analysis", "/admin/sync-history", "/admin/sync-vault-scrub"])
   const legacyRoutes = new Set(["/logs"])
 
   if (![...googleRoutes, ...adminRoutes, ...legacyRoutes].includes(url.pathname)) {
@@ -1784,6 +1915,10 @@ const handleRequest = async (request: Request, env: Env) => {
 
     if (url.pathname === "/admin/sync-history" && request.method === "GET") {
       return handleGetSyncHistory(request, env, auth)
+    }
+
+    if (url.pathname === "/admin/sync-vault-scrub" && request.method === "POST") {
+      return handlePostSyncVaultScrub(env)
     }
 
     return json({ error: "method not allowed" }, { status: 405 })

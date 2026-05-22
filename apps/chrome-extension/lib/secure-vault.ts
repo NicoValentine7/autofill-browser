@@ -43,6 +43,17 @@ export type SecureVaultKey = {
   createdAt: string
 }
 
+export type SecureVaultRecoveryPackage = {
+  schemaVersion: 1
+  keyId: string
+  algorithm: "PBKDF2-SHA256/AES-GCM"
+  iterations: number
+  salt: string
+  iv: string
+  ciphertext: string
+  createdAt: string
+}
+
 export type SecureVaultValueUpdate = {
   hostname: string
   fieldSignature: string
@@ -53,6 +64,12 @@ export type SecureVaultValueUpdate = {
   incrementCorrected?: boolean
   incrementLearned?: boolean
 }
+
+const RECOVERY_KEY_ITERATIONS = 600_000
+const MIN_RECOVERY_KEY_ITERATIONS = 250_000
+const MAX_RECOVERY_KEY_ITERATIONS = 5_000_000
+const RECOVERY_PHRASE_BYTES = 32
+export const MIN_VAULT_RECOVERY_PASSPHRASE_LENGTH = 24
 
 export const createEmptySecureVault = (): SecureVaultState => ({
   schemaVersion: 1,
@@ -68,6 +85,8 @@ const bytesToBase64 = (bytes: Uint8Array) => {
   return btoa(binary)
 }
 
+const bytesToBase64Url = (bytes: Uint8Array) => bytesToBase64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
+
 const base64ToBytes = (value: string) => {
   const binary = atob(value)
   const bytes = new Uint8Array(binary.length)
@@ -76,6 +95,16 @@ const base64ToBytes = (value: string) => {
   }
   return bytes
 }
+
+const getBase64ByteLength = (value: string) => {
+  try {
+    return base64ToBytes(value).byteLength
+  } catch (_error) {
+    return null
+  }
+}
+
+const toArrayBuffer = (bytes: Uint8Array) => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
 
 const getCrypto = () => {
   if (!globalThis.crypto?.subtle) {
@@ -86,6 +115,46 @@ const getCrypto = () => {
 
 const importKey = async (key: SecureVaultKey) =>
   getCrypto().subtle.importKey("raw", base64ToBytes(key.rawKey), { name: "AES-GCM" }, false, ["encrypt", "decrypt"])
+
+const importPassphraseKey = async (passphrase: string) =>
+  getCrypto().subtle.importKey("raw", new TextEncoder().encode(passphrase), "PBKDF2", false, ["deriveKey"])
+
+const deriveRecoveryKey = async (passphrase: string, salt: Uint8Array, iterations: number) =>
+  getCrypto().subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      hash: "SHA-256",
+      salt: toArrayBuffer(salt),
+      iterations
+    },
+    await importPassphraseKey(passphrase),
+    {
+      name: "AES-GCM",
+      length: 256
+    },
+    false,
+    ["encrypt", "decrypt"]
+  )
+
+const normalizeRecoveryPassphrase = (passphrase: string) => passphrase.trim()
+
+const encodeRecoveryAdditionalData = (
+  recoveryPackage: Pick<
+    SecureVaultRecoveryPackage,
+    "schemaVersion" | "keyId" | "algorithm" | "iterations" | "salt" | "iv" | "createdAt"
+  >
+) =>
+  new TextEncoder().encode(
+    JSON.stringify([
+      recoveryPackage.schemaVersion,
+      recoveryPackage.keyId,
+      recoveryPackage.algorithm,
+      recoveryPackage.iterations,
+      recoveryPackage.salt,
+      recoveryPackage.iv,
+      recoveryPackage.createdAt
+    ])
+  )
 
 export const createSecureVaultKey = (): SecureVaultKey => {
   const rawKey = new Uint8Array(32)
@@ -100,6 +169,12 @@ export const createSecureVaultKey = (): SecureVaultKey => {
   }
 }
 
+export const generateSecureVaultRecoveryPhrase = () => {
+  const bytes = new Uint8Array(RECOVERY_PHRASE_BYTES)
+  getCrypto().getRandomValues(bytes)
+  return bytesToBase64Url(bytes)
+}
+
 export const normalizeSecureVaultKey = (key?: Partial<SecureVaultKey> | null): SecureVaultKey | undefined => {
   if (key?.schemaVersion !== 1 || key.algorithm !== "AES-GCM" || !key.rawKey || !key.keyId || !key.createdAt) {
     return undefined
@@ -111,6 +186,40 @@ export const normalizeSecureVaultKey = (key?: Partial<SecureVaultKey> | null): S
     algorithm: "AES-GCM",
     rawKey: key.rawKey,
     createdAt: key.createdAt
+  }
+}
+
+export const normalizeSecureVaultRecoveryPackage = (
+  recoveryPackage?: Partial<SecureVaultRecoveryPackage> | null
+): SecureVaultRecoveryPackage | undefined => {
+  if (
+    recoveryPackage?.schemaVersion !== 1 ||
+    recoveryPackage.algorithm !== "PBKDF2-SHA256/AES-GCM" ||
+    !recoveryPackage.keyId ||
+    !recoveryPackage.salt ||
+    !recoveryPackage.iv ||
+    !recoveryPackage.ciphertext ||
+    !recoveryPackage.createdAt ||
+    typeof recoveryPackage.iterations !== "number" ||
+    !Number.isFinite(recoveryPackage.iterations) ||
+    recoveryPackage.iterations < MIN_RECOVERY_KEY_ITERATIONS ||
+    recoveryPackage.iterations > MAX_RECOVERY_KEY_ITERATIONS ||
+    getBase64ByteLength(recoveryPackage.salt) !== 16 ||
+    getBase64ByteLength(recoveryPackage.iv) !== 12 ||
+    (getBase64ByteLength(recoveryPackage.ciphertext) ?? 0) < 16
+  ) {
+    return undefined
+  }
+
+  return {
+    schemaVersion: 1,
+    keyId: recoveryPackage.keyId,
+    algorithm: "PBKDF2-SHA256/AES-GCM",
+    iterations: Math.floor(recoveryPackage.iterations),
+    salt: recoveryPackage.salt,
+    iv: recoveryPackage.iv,
+    ciphertext: recoveryPackage.ciphertext,
+    createdAt: recoveryPackage.createdAt
   }
 }
 
@@ -234,6 +343,83 @@ export const classifySecureVaultKind = (
   }
 
   return "custom"
+}
+
+export const createSecureVaultRecoveryPackage = async (
+  key: SecureVaultKey,
+  passphrase: string
+): Promise<SecureVaultRecoveryPackage | null> => {
+  const normalizedPassphrase = normalizeRecoveryPassphrase(passphrase)
+  if (normalizedPassphrase.length < MIN_VAULT_RECOVERY_PASSPHRASE_LENGTH) {
+    return null
+  }
+
+  const salt = new Uint8Array(16)
+  const iv = new Uint8Array(12)
+  getCrypto().getRandomValues(salt)
+  getCrypto().getRandomValues(iv)
+  const createdAt = new Date().toISOString()
+  const partialRecoveryPackage = {
+    schemaVersion: 1 as const,
+    keyId: key.keyId,
+    algorithm: "PBKDF2-SHA256/AES-GCM" as const,
+    iterations: RECOVERY_KEY_ITERATIONS,
+    salt: bytesToBase64(salt),
+    iv: bytesToBase64(iv),
+    createdAt
+  }
+  const recoveryKey = await deriveRecoveryKey(normalizedPassphrase, salt, RECOVERY_KEY_ITERATIONS)
+  const ciphertext = await getCrypto().subtle.encrypt(
+    {
+      name: "AES-GCM",
+      iv,
+      additionalData: encodeRecoveryAdditionalData(partialRecoveryPackage)
+    },
+    recoveryKey,
+    new TextEncoder().encode(JSON.stringify(key))
+  )
+
+  return {
+    ...partialRecoveryPackage,
+    ciphertext: bytesToBase64(new Uint8Array(ciphertext))
+  }
+}
+
+export const recoverSecureVaultKey = async (
+  recoveryPackage: SecureVaultRecoveryPackage,
+  passphrase: string
+): Promise<SecureVaultKey | null> => {
+  const normalizedRecoveryPackage = normalizeSecureVaultRecoveryPackage(recoveryPackage)
+  if (!normalizedRecoveryPackage) {
+    return null
+  }
+
+  const normalizedPassphrase = normalizeRecoveryPassphrase(passphrase)
+  if (normalizedPassphrase.length < MIN_VAULT_RECOVERY_PASSPHRASE_LENGTH) {
+    return null
+  }
+
+  try {
+    const recoveryKey = await deriveRecoveryKey(
+      normalizedPassphrase,
+      base64ToBytes(normalizedRecoveryPackage.salt),
+      normalizedRecoveryPackage.iterations
+    )
+    const plaintext = await getCrypto().subtle.decrypt(
+      {
+        name: "AES-GCM",
+        iv: base64ToBytes(normalizedRecoveryPackage.iv),
+        additionalData: encodeRecoveryAdditionalData(normalizedRecoveryPackage)
+      },
+      recoveryKey,
+      base64ToBytes(normalizedRecoveryPackage.ciphertext)
+    )
+    const parsed = JSON.parse(new TextDecoder().decode(plaintext)) as Partial<SecureVaultKey>
+    const recoveredKey = normalizeSecureVaultKey(parsed)
+    return recoveredKey?.keyId === normalizedRecoveryPackage.keyId ? recoveredKey : null
+  } catch (_error) {
+    return null
+  }
 }
 
 export const encryptSecureValue = async (value: string, key: SecureVaultKey): Promise<SecureVaultEncryptedValue> => {

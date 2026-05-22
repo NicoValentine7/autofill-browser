@@ -16,10 +16,12 @@ import { sendCloudLogSyncMessage } from "./messages"
 import {
   createSecureVaultKey,
   decryptSecureVaultValues,
+  normalizeSecureVaultRecoveryPackage,
   normalizeSecureVaultKey,
   normalizeSecureVaultState,
   upsertSecureVaultValue,
   type SecureVaultKey,
+  type SecureVaultRecoveryPackage,
   type SecureVaultState,
   type SecureVaultValueUpdate
 } from "./secure-vault"
@@ -31,6 +33,7 @@ const STORAGE_KEYS = {
   fieldMemory: "autofillFieldMemory",
   secureVault: "autofillSecureVault",
   secureVaultKey: "autofillSecureVaultKey",
+  secureVaultRecovery: "autofillSecureVaultRecovery",
   eventLog: "autofillEventLog",
   googleAuthUser: "autofillGoogleAuthUser",
   accountSync: "autofillAccountSync",
@@ -68,6 +71,7 @@ export type StorageSnapshot = {
   fieldMemory: Record<string, FieldMemoryEntry>
   secureVault: SecureVaultState
   secureVaultKey?: SecureVaultKey
+  secureVaultRecovery?: SecureVaultRecoveryPackage
   secureVaultValues: Record<string, string>
   eventLog: EventLogEntry[]
   googleAuthUser?: GoogleAuthUser
@@ -91,6 +95,7 @@ type StorageUpdate = {
   secureVaultUpdates?: SecureVaultValueUpdate[]
   secureVault?: SecureVaultState
   secureVaultKey?: SecureVaultKey | null
+  secureVaultRecovery?: SecureVaultRecoveryPackage | null
   eventEntries?: NewEventLogEntry[]
   googleAuthUser?: GoogleAuthUser | null
   accountSync?: Partial<AccountSyncState>
@@ -260,6 +265,9 @@ export const getStorageSnapshot = async (): Promise<StorageSnapshot> => {
   const shouldSeedDefaultProfile = !rawProfile || !Object.values(normalizedStoredProfile).some((value) => value.trim().length > 0)
   const secureVault = normalizeSecureVaultState(stored[STORAGE_KEYS.secureVault] as Partial<SecureVaultState> | undefined)
   const secureVaultKey = normalizeSecureVaultKey(stored[STORAGE_KEYS.secureVaultKey] as Partial<SecureVaultKey> | undefined)
+  const secureVaultRecovery = normalizeSecureVaultRecoveryPackage(
+    stored[STORAGE_KEYS.secureVaultRecovery] as Partial<SecureVaultRecoveryPackage> | undefined
+  )
 
   return {
     profile: shouldSeedDefaultProfile ? { ...DEFAULT_PROFILE } : normalizedStoredProfile,
@@ -268,6 +276,7 @@ export const getStorageSnapshot = async (): Promise<StorageSnapshot> => {
     fieldMemory: (stored[STORAGE_KEYS.fieldMemory] as Record<string, FieldMemoryEntry> | undefined) ?? {},
     secureVault,
     secureVaultKey,
+    secureVaultRecovery,
     secureVaultValues: await decryptSecureVaultValues(secureVault, secureVaultKey),
     eventLog: sortAndTrimEvents((stored[STORAGE_KEYS.eventLog] as EventLogEntry[] | undefined) ?? []),
     googleAuthUser: normalizeGoogleAuthUser(stored[STORAGE_KEYS.googleAuthUser] as Partial<GoogleAuthUser> | undefined),
@@ -279,7 +288,9 @@ export const getStorageSnapshot = async (): Promise<StorageSnapshot> => {
 export const commitStorageChanges = async (update: StorageUpdate): Promise<StorageSnapshot> => {
   const current = await getStorageSnapshot()
   const hasGoogleAuthUserUpdate = Object.prototype.hasOwnProperty.call(update, "googleAuthUser")
+  const hasSecureVaultUpdate = Object.prototype.hasOwnProperty.call(update, "secureVault")
   const hasSecureVaultKeyUpdate = Object.prototype.hasOwnProperty.call(update, "secureVaultKey")
+  const hasSecureVaultRecoveryUpdate = Object.prototype.hasOwnProperty.call(update, "secureVaultRecovery")
   const next: StorageSnapshot = {
     profile: update.profile ? normalizeProfile(update.profile) : current.profile,
     settings: update.settings ? normalizeSettings({ ...current.settings, ...update.settings }) : current.settings,
@@ -287,6 +298,9 @@ export const commitStorageChanges = async (update: StorageUpdate): Promise<Stora
     fieldMemory: { ...current.fieldMemory },
     secureVault: update.secureVault ? normalizeSecureVaultState(update.secureVault) : current.secureVault,
     secureVaultKey: hasSecureVaultKeyUpdate ? normalizeSecureVaultKey(update.secureVaultKey) : current.secureVaultKey,
+    secureVaultRecovery: hasSecureVaultRecoveryUpdate
+      ? normalizeSecureVaultRecoveryPackage(update.secureVaultRecovery)
+      : current.secureVaultRecovery,
     secureVaultValues: current.secureVaultValues,
     eventLog: current.eventLog,
     googleAuthUser: hasGoogleAuthUserUpdate ? normalizeGoogleAuthUser(update.googleAuthUser) : current.googleAuthUser,
@@ -311,6 +325,9 @@ export const commitStorageChanges = async (update: StorageUpdate): Promise<Stora
     for (const secureVaultUpdate of update.secureVaultUpdates) {
       next.secureVault = await upsertSecureVaultValue(next.secureVault, next.secureVaultKey, secureVaultUpdate)
     }
+  }
+
+  if (hasSecureVaultUpdate || hasSecureVaultKeyUpdate || (update.secureVaultUpdates && update.secureVaultUpdates.length > 0)) {
     next.secureVaultValues = await decryptSecureVaultValues(next.secureVault, next.secureVaultKey)
   }
 
@@ -328,6 +345,7 @@ export const commitStorageChanges = async (update: StorageUpdate): Promise<Stora
     [STORAGE_KEYS.fieldMemory]: next.fieldMemory,
     [STORAGE_KEYS.secureVault]: next.secureVault,
     [STORAGE_KEYS.secureVaultKey]: next.secureVaultKey ?? null,
+    [STORAGE_KEYS.secureVaultRecovery]: next.secureVaultRecovery ?? null,
     [STORAGE_KEYS.eventLog]: next.eventLog,
     [STORAGE_KEYS.googleAuthUser]: next.googleAuthUser ?? null,
     [STORAGE_KEYS.accountSync]: next.accountSync,
@@ -425,9 +443,20 @@ export const saveRemoteRules = async (remoteRules: RemoteAutofillRules) =>
     remoteRules
   })
 
+export const saveSecureVaultRecoveryPackage = async (secureVaultRecovery: SecureVaultRecoveryPackage) =>
+  commitStorageChanges({
+    secureVaultRecovery
+  })
+
+export const saveSecureVaultKey = async (secureVaultKey: SecureVaultKey) =>
+  commitStorageChanges({
+    secureVaultKey
+  })
+
 export const applySyncedSnapshot = async (
   syncedSnapshot: Pick<StorageSnapshot, "profile" | "settings" | "domainPolicies"> & {
     secureVault?: SecureVaultState
+    secureVaultRecovery?: SecureVaultRecoveryPackage
     updatedAt?: string
     revision?: number
   },
@@ -438,6 +467,7 @@ export const applySyncedSnapshot = async (
     settings: syncedSnapshot.settings,
     domainPolicies: syncedSnapshot.domainPolicies,
     ...(syncedSnapshot.secureVault ? { secureVault: syncedSnapshot.secureVault } : {}),
+    ...(syncedSnapshot.secureVaultRecovery ? { secureVaultRecovery: syncedSnapshot.secureVaultRecovery } : {}),
     accountSync: {
       lastPulledAt: new Date().toISOString(),
       lastRemoteUpdatedAt: remoteUpdatedAt ?? syncedSnapshot.updatedAt,

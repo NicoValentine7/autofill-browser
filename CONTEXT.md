@@ -16,6 +16,14 @@ _Avoid_: device key, global vault key, extension key
 A **Secure Vault** arrangement where the service stores synchronized vault data but cannot decrypt **Vault Entry** values because it never receives the **Vault Key**. The service may authenticate the user and move encrypted vault data, but it is not trusted with reusable sensitive values.
 _Avoid_: server-encrypted vault, cloud-readable vault, trusted-server vault
 
+**Recovery Phrase**:
+A high-entropy client-generated phrase used only on the client to wrap or unwrap a **Vault Key**. A **Recovery Phrase** must not be sent to the service, stored in D1, or written to logs.
+_Avoid_: cloud password, bearer token, Google password
+
+**Vault Recovery Package**:
+An encrypted package stored with the sync snapshot that contains a **Vault Key** wrapped by a **Recovery Phrase**. The service may store and move this package, but cannot unwrap it without the user's **Recovery Phrase**.
+_Avoid_: synced vault key, server recovery key, backup password
+
 **System Account**:
 The account inside Autofill Browser that owns profiles, domain policies, logs, sync snapshots, and the **Secure Vault**. A **System Account** may have many linked identity providers, including many **Linked Google Accounts**, and is established when the first identity is attached.
 _Avoid_: Google account, Chrome profile, browser profile
@@ -58,6 +66,9 @@ This phrase is ambiguous and should not be used alone. Use **Identity Migration*
 **"Local Data"**:
 This phrase is ambiguous around sensitive values. Use **Local Vault Transfer** when discussing unsynced **Secure Vault** data that might be moved between **System Accounts**.
 
+**"Vault Backup"**:
+This phrase is ambiguous because it can imply the cloud can read or restore the vault by itself. Use **Vault Recovery Package** when the cloud stores only an encrypted wrapper, and **Recovery Phrase** when referring to the user-held secret needed to unwrap it.
+
 ## Example Dialogue
 
 Dev: "Should we save this confirmation code?"
@@ -79,3 +90,7 @@ Domain expert: "No. A new sign-in loads the target System Account's Secure Vault
 Dev: "Can two System Accounts on the same device use the same Vault Key?"
 
 Domain expert: "No. Each System Account has its own Vault Key because each System Account owns a separate Secure Vault."
+
+Dev: "Can the cloud restore my Secure Vault by itself?"
+
+Domain expert: "No. The cloud can return the Vault Recovery Package, but the user must enter the Recovery Phrase locally to recover the Vault Key."

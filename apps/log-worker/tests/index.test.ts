@@ -145,6 +145,13 @@ class FakeStatement implements D1PreparedStatement {
       }
     }
 
+    if (this.query.includes("UPDATE user_sync_snapshot_history")) {
+      const snapshot = this.db.snapshotHistory.find((row) => row.id === this.values[1])
+      if (snapshot) {
+        snapshot.secure_vault_json = this.values[0] === null ? null : String(this.values[0])
+      }
+    }
+
     if (this.query.includes("INSERT OR REPLACE INTO user_sync_snapshots")) {
       const row: StoredSyncSnapshotRow = {
         user_id: String(this.values[0]),
@@ -246,9 +253,10 @@ class FakeStatement implements D1PreparedStatement {
     }
 
     if (this.query.includes("FROM user_sync_snapshots")) {
+      const hasUserFilter = this.query.includes("WHERE user_id = ?")
       return {
         success: true,
-        results: this.db.snapshots.filter((row) => row.user_id === this.values[0]) as T[]
+        results: this.db.snapshots.filter((row) => (hasUserFilter ? row.user_id === this.values[0] : true)) as T[]
       }
     }
 
@@ -667,6 +675,16 @@ describe("log-worker", () => {
           }
         }
       },
+      secureVaultRecovery: {
+        schemaVersion: 1,
+        keyId: "vault-key-1",
+        algorithm: "PBKDF2-SHA256/AES-GCM",
+        iterations: 250000,
+        salt: "salt",
+        iv: "iv",
+        ciphertext: "wrapped-key-ciphertext",
+        createdAt: "2026-05-22T00:00:00.000Z"
+      },
       updatedAt: "2026-05-21T00:00:00.000Z",
       baseRevision: 0,
       deviceId: "device-a",
@@ -693,9 +711,58 @@ describe("log-worker", () => {
     expect(getResponse.status).toBe(200)
     expect(body.snapshot).not.toHaveProperty("secureVaultKey")
     expect(body.snapshot.secureVault.entries["example.com::field"].kind).toBe("payment-card")
+    expect(body.snapshot.secureVaultRecovery.ciphertext).toBe("wrapped-key-ciphertext")
     expect(env.DB.snapshots[0]?.secure_vault_json).toContain('"encrypted":true')
     expect(env.DB.snapshots[0]?.secure_vault_json).not.toContain("client-side-card-ciphertext")
+    expect(env.DB.snapshots[0]?.secure_vault_json).not.toContain("wrapped-key-ciphertext")
     expect(env.DB.snapshots[0]?.raw_json).not.toContain("client-side-card-ciphertext")
+    expect(env.DB.snapshots[0]?.raw_json).not.toContain("wrapped-key-ciphertext")
+  })
+
+  it("rejects sync payloads that still contain a plaintext secureVaultKey", async () => {
+    const env = createEnv()
+    mockGoogleTokenInfo()
+    const snapshot = {
+      schemaVersion: 1,
+      profile: {
+        familyName: "",
+        givenName: "",
+        fullName: "",
+        email: "",
+        phone: "",
+        organization: "",
+        postalCode: "",
+        prefecture: "",
+        city: "",
+        addressLine1: "",
+        addressLine2: ""
+      },
+      settings: {
+        enabled: true,
+        observeDynamicForms: true,
+        minMatchCount: 1
+      },
+      domainPolicies: {},
+      secureVaultKey: {
+        rawKey: "legacy-raw-key"
+      },
+      updatedAt: "2026-05-21T00:00:00.000Z",
+      baseRevision: 0,
+      deviceId: "device-a",
+      changedFields: ["secureVault"]
+    }
+
+    const response = await worker.fetch(
+      new Request("https://logs.example.com/me/settings", {
+        method: "PUT",
+        headers: googleHeaders,
+        body: JSON.stringify(snapshot)
+      }),
+      env
+    )
+
+    expect(response.status).toBe(400)
+    expect(env.DB.snapshots).toHaveLength(0)
   })
 
   it("scrubs legacy secure vault keys from the current sync row on read", async () => {
@@ -744,6 +811,16 @@ describe("log-worker", () => {
           }
         }
       },
+      secureVaultRecovery: {
+        schemaVersion: 1,
+        keyId: "vault-key-1",
+        algorithm: "PBKDF2-SHA256/AES-GCM",
+        iterations: 250000,
+        salt: "salt",
+        iv: "iv",
+        ciphertext: "wrapped-key-ciphertext",
+        createdAt: "2026-05-22T00:00:00.000Z"
+      },
       updatedAt: "2026-05-21T00:00:00.000Z",
       baseRevision: 0,
       deviceId: "device-a",
@@ -760,8 +837,16 @@ describe("log-worker", () => {
     )
     env.DB.snapshots[0]!.secure_vault_json = JSON.stringify({
       secureVault: snapshot.secureVault,
+      secureVaultRecovery: snapshot.secureVaultRecovery,
       secureVaultKey: {
         rawKey: "legacy-raw-key"
+      }
+    })
+    env.DB.snapshotHistory[0]!.secure_vault_json = JSON.stringify({
+      secureVault: snapshot.secureVault,
+      secureVaultRecovery: snapshot.secureVaultRecovery,
+      secureVaultKey: {
+        rawKey: "legacy-history-raw-key"
       }
     })
 
@@ -771,12 +856,91 @@ describe("log-worker", () => {
       }),
       env
     )
+    const restoreResponse = await worker.fetch(
+      new Request("https://logs.example.com/me/settings/history", {
+        method: "POST",
+        headers: googleHeaders,
+        body: JSON.stringify({
+          revision: 1
+        })
+      }),
+      env
+    )
     const body = (await response.json()) as { snapshot: typeof snapshot }
 
     expect(response.status).toBe(200)
+    expect(restoreResponse.status).toBe(200)
     expect(body.snapshot).not.toHaveProperty("secureVaultKey")
+    expect(body.snapshot.secureVaultRecovery.ciphertext).toBe("wrapped-key-ciphertext")
     expect(env.DB.snapshots[0]?.secure_vault_json).toContain('"encrypted":true')
     expect(env.DB.snapshots[0]?.secure_vault_json).not.toContain("legacy-raw-key")
+    expect(env.DB.snapshotHistory[0]?.secure_vault_json).toContain('"encrypted":true')
+    expect(env.DB.snapshotHistory[0]?.secure_vault_json).not.toContain("legacy-history-raw-key")
+  })
+
+  it("scrubs legacy secure vault keys across current and history rows from the admin endpoint", async () => {
+    const env = createEnv()
+    mockGoogleTokenInfo()
+    const snapshot = {
+      schemaVersion: 1,
+      profile: {
+        familyName: "",
+        givenName: "",
+        fullName: "",
+        email: "",
+        phone: "",
+        organization: "",
+        postalCode: "",
+        prefecture: "",
+        city: "",
+        addressLine1: "",
+        addressLine2: ""
+      },
+      settings: {
+        enabled: true,
+        observeDynamicForms: true,
+        minMatchCount: 1
+      },
+      domainPolicies: {},
+      updatedAt: "2026-05-21T00:00:00.000Z",
+      baseRevision: 0,
+      deviceId: "device-a",
+      changedFields: ["profile"]
+    }
+
+    await worker.fetch(
+      new Request("https://logs.example.com/me/settings", {
+        method: "PUT",
+        headers: googleHeaders,
+        body: JSON.stringify(snapshot)
+      }),
+      env
+    )
+    env.DB.snapshots[0]!.secure_vault_json = JSON.stringify({
+      secureVaultKey: {
+        rawKey: "legacy-current-raw-key"
+      }
+    })
+    env.DB.snapshotHistory[0]!.secure_vault_json = JSON.stringify({
+      secureVaultKey: {
+        rawKey: "legacy-history-raw-key"
+      }
+    })
+
+    const response = await worker.fetch(
+      new Request("https://logs.example.com/admin/sync-vault-scrub", {
+        method: "POST",
+        headers: authHeaders
+      }),
+      env
+    )
+    const body = (await response.json()) as { currentScrubbed: number; historyScrubbed: number }
+
+    expect(response.status).toBe(200)
+    expect(body.currentScrubbed).toBe(1)
+    expect(body.historyScrubbed).toBe(1)
+    expect(env.DB.snapshots[0]?.secure_vault_json).toBeNull()
+    expect(env.DB.snapshotHistory[0]?.secure_vault_json).toBeNull()
   })
 
   it("merges disjoint sync changes and rejects overlapping stale changes", async () => {

@@ -7,6 +7,12 @@ import { clearGoogleAuthTokens, getGoogleAccessToken } from "./google-auth"
 import type { ExtensionMessage } from "./messages"
 import { sendMessageToTab } from "./messages"
 import {
+  MIN_VAULT_RECOVERY_PASSPHRASE_LENGTH,
+  createSecureVaultRecoveryPackage,
+  generateSecureVaultRecoveryPhrase,
+  recoverSecureVaultKey
+} from "./secure-vault"
+import {
   applySyncedSnapshot,
   appendEventEntries,
   clearGoogleAuthUser,
@@ -16,6 +22,8 @@ import {
   saveGoogleAuthUser,
   saveProfile,
   saveRemoteRules,
+  saveSecureVaultKey,
+  saveSecureVaultRecoveryPackage,
   saveSettings,
   type StorageSnapshot
 } from "./storage"
@@ -118,6 +126,9 @@ const formatEvent = (event: EventLogEntry) => {
 function PopupApp() {
   const [snapshot, setSnapshot] = useState<StorageSnapshot | null>(null)
   const [profileForm, setProfileForm] = useState<StoredProfile>(createEmptyProfile())
+  const [vaultRecoveryPassphrase, setVaultRecoveryPassphrase] = useState("")
+  const [isGeneratedVaultRecoveryPassphrase, setIsGeneratedVaultRecoveryPassphrase] = useState(false)
+  const [showVaultRecoveryPassphrase, setShowVaultRecoveryPassphrase] = useState(false)
   const [activeTab, setActiveTab] = useState<ActiveTabContext>({ hostname: "", url: "" })
   const [status, setStatus] = useState("読み込み中やで")
 
@@ -247,6 +258,12 @@ function PopupApp() {
   }
 
   const profileReady = isProfileConfigured(snapshot.profile)
+  const vaultEntryCount = Object.keys(snapshot.secureVault.entries).length
+  const hasUsableVaultKey = Boolean(
+    snapshot.secureVaultKey && (!snapshot.secureVaultRecovery || snapshot.secureVaultKey.keyId === snapshot.secureVaultRecovery.keyId)
+  )
+  const shouldShowVaultRecovery =
+    Boolean(snapshot.secureVaultKey) || Boolean(snapshot.secureVaultRecovery) || vaultEntryCount > 0
 
   const handleProfileFieldChange = (key: keyof StoredProfile, value: string) => {
     setProfileForm((current) => ({
@@ -339,7 +356,7 @@ function PopupApp() {
       return
     }
 
-    await pushSnapshotIfSignedIn(signedInSnapshot, ["profile", "settings", "domainPolicies", "secureVault"])
+    await pushSnapshotIfSignedIn(signedInSnapshot, ["profile", "settings", "domainPolicies"])
     setStatus(`${googleAuthUser.email} でログインしてクラウドへ初期保存したで`)
   }
 
@@ -348,6 +365,69 @@ function PopupApp() {
     const nextSnapshot = await clearGoogleAuthUser()
     setSnapshot(nextSnapshot)
     setStatus("Googleログアウトしたで")
+  }
+
+  const handleGenerateVaultRecoveryPassphrase = () => {
+    setVaultRecoveryPassphrase(generateSecureVaultRecoveryPhrase())
+    setIsGeneratedVaultRecoveryPassphrase(true)
+    setShowVaultRecoveryPassphrase(true)
+    setStatus("生成した回復フレーズを控えてから保存してな")
+  }
+
+  const handleSaveVaultRecovery = async () => {
+    if (!snapshot.secureVaultKey || !hasUsableVaultKey) {
+      setStatus("このSystem AccountのVault Keyを先に復元してな")
+      return
+    }
+
+    if (!isGeneratedVaultRecoveryPassphrase) {
+      setStatus("生成ボタンで高強度の回復フレーズを作ってから保存してな")
+      return
+    }
+
+    if (vaultRecoveryPassphrase.trim().length < MIN_VAULT_RECOVERY_PASSPHRASE_LENGTH) {
+      setStatus(`回復フレーズは${MIN_VAULT_RECOVERY_PASSPHRASE_LENGTH}文字以上にしてな`)
+      return
+    }
+
+    const recoveryPackage = await createSecureVaultRecoveryPackage(snapshot.secureVaultKey, vaultRecoveryPassphrase)
+    if (!recoveryPackage) {
+      setStatus("回復フレーズを保存できへんかった")
+      return
+    }
+
+    const nextSnapshot = await saveSecureVaultRecoveryPackage(recoveryPackage)
+    setSnapshot(nextSnapshot)
+    setVaultRecoveryPassphrase("")
+    setIsGeneratedVaultRecoveryPassphrase(false)
+    setShowVaultRecoveryPassphrase(false)
+    const pushedSnapshot = await pushSnapshotIfSignedIn(nextSnapshot, ["secureVault"])
+    if (!nextSnapshot.googleAuthUser) {
+      setStatus("回復フレーズをローカル保存したで。Googleログイン後にもう一度保存してな")
+    } else if ((pushedSnapshot.accountSync.lastPushedAt ?? "") !== (nextSnapshot.accountSync.lastPushedAt ?? "")) {
+      setStatus("Secure Vaultの回復フレーズをクラウド保存したで")
+    }
+  }
+
+  const handleRecoverVaultKey = async () => {
+    if (!snapshot.secureVaultRecovery) {
+      setStatus("クラウドにVault回復データがないで")
+      return
+    }
+
+    const recoveredKey = await recoverSecureVaultKey(snapshot.secureVaultRecovery, vaultRecoveryPassphrase)
+    if (!recoveredKey) {
+      setStatus("回復フレーズが違うか短すぎるで")
+      return
+    }
+
+    const nextSnapshot = await saveSecureVaultKey(recoveredKey)
+    setSnapshot(nextSnapshot)
+    setVaultRecoveryPassphrase("")
+    setIsGeneratedVaultRecoveryPassphrase(false)
+    setShowVaultRecoveryPassphrase(false)
+    await notifyActiveTab(activeTab.id, { type: "SETTINGS_UPDATED" })
+    setStatus("Vault Keyをこの端末へ復元したで")
   }
 
   return (
@@ -446,6 +526,59 @@ function PopupApp() {
           </button>
         </div>
       </section>
+
+      {shouldShowVaultRecovery ? (
+        <section style={sectionStyle}>
+          <h2 style={{ margin: "0 0 8px", fontSize: 14 }}>Secure Vault</h2>
+          <p style={{ margin: "0 0 8px", fontSize: 12, color: "#c7d0dd" }}>
+            {hasUsableVaultKey
+              ? snapshot.secureVaultRecovery
+                ? "この端末で復号OK / 回復フレーズ保存済み"
+                : "この端末で復号OK"
+              : snapshot.secureVaultRecovery
+                ? "回復フレーズで復元できるで"
+                : "この端末ではまだ復号できへん"}
+          </p>
+          <label style={{ display: "grid", gap: 4, fontSize: 12 }}>
+            <span>回復フレーズ</span>
+            <div style={{ display: "grid", gridTemplateColumns: hasUsableVaultKey ? "1fr auto" : "1fr", gap: 8 }}>
+              <input
+                type={showVaultRecoveryPassphrase ? "text" : "password"}
+                value={vaultRecoveryPassphrase}
+                onChange={(event) => {
+                  setVaultRecoveryPassphrase(event.target.value)
+                  setIsGeneratedVaultRecoveryPassphrase(false)
+                }}
+                placeholder={hasUsableVaultKey ? "生成して保存" : `${MIN_VAULT_RECOVERY_PASSPHRASE_LENGTH}文字以上`}
+                style={inputStyle}
+              />
+              {hasUsableVaultKey ? (
+                <button
+                  type="button"
+                  onClick={handleGenerateVaultRecoveryPassphrase}
+                  style={{
+                    ...buttonStyle,
+                    padding: "8px 10px",
+                    background: "#c4b5fd",
+                  }}>
+                  生成
+                </button>
+              ) : null}
+            </div>
+          </label>
+          <button
+            type="button"
+            onClick={hasUsableVaultKey ? handleSaveVaultRecovery : handleRecoverVaultKey}
+            style={{
+              marginTop: 8,
+              width: "100%",
+              ...buttonStyle,
+              background: hasUsableVaultKey ? "#a7f3d0" : "#bfdbfe",
+            }}>
+            {hasUsableVaultKey ? "回復フレーズを保存" : "Vault Keyを復元"}
+          </button>
+        </section>
+      ) : null}
 
       <section style={sectionStyle}>
         <h2 style={{ margin: "0 0 8px", fontSize: 14 }}>このサイト</h2>

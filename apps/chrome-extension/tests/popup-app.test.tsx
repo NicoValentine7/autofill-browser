@@ -5,6 +5,7 @@ import { DEFAULT_AUTOFILL_SETTINGS, PROFILE_KEYS, createEmptyProfile, type Event
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import PopupApp from "../lib/popup-app"
+import { createSecureVaultRecoveryPackage, type SecureVaultKey } from "../lib/secure-vault"
 import { createChromeMock } from "./helpers/mock-chrome"
 
 const createEvent = (index: number): EventLogEntry => ({
@@ -18,6 +19,20 @@ const createEvent = (index: number): EventLogEntry => ({
 })
 
 const emptyProfile = Object.fromEntries(PROFILE_KEYS.map((key) => [key, ""])) as ReturnType<typeof createEmptyProfile>
+
+const vaultKey: SecureVaultKey = {
+  schemaVersion: 1,
+  keyId: "vault-key-1",
+  algorithm: "AES-GCM",
+  rawKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+  createdAt: "2026-05-22T00:00:00.000Z"
+}
+
+const secondVaultKey: SecureVaultKey = {
+  ...vaultKey,
+  keyId: "vault-key-2",
+  rawKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
+}
 
 describe("PopupApp", () => {
   afterEach(() => {
@@ -175,6 +190,8 @@ describe("PopupApp", () => {
     expect(requests.some((request) => request.url === "https://autofill-browser-log-worker.y-elucidator.workers.dev/me/settings" && request.init?.method === "PUT")).toBe(
       true
     )
+    const putRequest = requests.find((request) => request.url.endsWith("/me/settings") && request.init?.method === "PUT")
+    expect(String(putRequest?.init?.body)).not.toContain("secureVault")
     expect(mock.storageData.autofillAccountSync).toMatchObject({
       lastRemoteUpdatedAt: "2026-05-21T00:00:01.000Z"
     })
@@ -245,6 +262,112 @@ describe("PopupApp", () => {
     })
     expect(screen.queryByRole("button", { name: "クラウドへ保存" })).toBeNull()
     expect(screen.queryByRole("button", { name: "クラウドから復元" })).toBeNull()
+  })
+
+  it("saves a wrapped Secure Vault recovery package without syncing the raw key", async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = []
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        requests.push({ url, init })
+
+        if (url.endsWith("/me/settings") && init?.method !== "PUT") {
+          return new Response(JSON.stringify({ snapshot: null }), {
+            status: 200,
+            headers: {
+              "content-type": "application/json"
+            }
+          })
+        }
+
+        return new Response(JSON.stringify({ ok: true, updatedAt: "2026-05-22T00:00:00.000Z" }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json"
+          }
+        })
+      })
+    )
+    const mock = createChromeMock({
+      autofillProfile: {
+        ...createEmptyProfile(),
+        fullName: "山田 太郎"
+      },
+      autofillSecureVaultKey: vaultKey,
+      autofillGoogleAuthUser: {
+        sub: "google-sub-1",
+        email: "taro@example.com",
+        signedInAt: "2026-05-21T00:00:00.000Z"
+      }
+    })
+    ;(globalThis as { chrome: typeof chrome }).chrome = mock.chromeMock as unknown as typeof chrome
+
+    render(createElement(PopupApp))
+
+    const user = userEvent.setup()
+    const recoveryPhraseInput = (await screen.findByLabelText("回復フレーズ")) as HTMLInputElement
+    await user.click(screen.getByRole("button", { name: "生成" }))
+    const recoveryPhrase = recoveryPhraseInput.value
+    await user.click(screen.getByRole("button", { name: "回復フレーズを保存" }))
+
+    await waitFor(() => {
+      expect(mock.storageData.autofillSecureVaultRecovery).toMatchObject({
+        keyId: "vault-key-1",
+        algorithm: "PBKDF2-SHA256/AES-GCM"
+      })
+    })
+    const putRequest = requests.find((request) => request.url.endsWith("/me/settings") && request.init?.method === "PUT")
+    expect(putRequest).toBeTruthy()
+    expect(recoveryPhrase).toHaveLength(43)
+    expect(String(putRequest?.init?.body)).not.toContain(vaultKey.rawKey)
+    expect(String(putRequest?.init?.body)).not.toContain("secureVaultKey")
+    expect(String(putRequest?.init?.body)).not.toContain(recoveryPhrase)
+  })
+
+  it("restores the local Secure Vault key from a recovery phrase", async () => {
+    const recoveryPackage = await createSecureVaultRecoveryPackage(vaultKey, "correct horse battery staple")
+    const mock = createChromeMock({
+      autofillProfile: {
+        ...createEmptyProfile(),
+        fullName: "山田 太郎"
+      },
+      autofillSecureVaultRecovery: recoveryPackage
+    })
+    ;(globalThis as { chrome: typeof chrome }).chrome = mock.chromeMock as unknown as typeof chrome
+
+    render(createElement(PopupApp))
+
+    const user = userEvent.setup()
+    await user.type(await screen.findByLabelText("回復フレーズ"), "correct horse battery staple")
+    await user.click(screen.getByRole("button", { name: "Vault Keyを復元" }))
+
+    await waitFor(() => {
+      expect(mock.storageData.autofillSecureVaultKey).toEqual(vaultKey)
+    })
+  })
+
+  it("does not treat a leftover local vault key as usable for a different recovery package", async () => {
+    const recoveryPackage = await createSecureVaultRecoveryPackage(secondVaultKey, "correct horse battery staple")
+    const mock = createChromeMock({
+      autofillProfile: {
+        ...createEmptyProfile(),
+        fullName: "山田 太郎"
+      },
+      autofillSecureVaultKey: vaultKey,
+      autofillSecureVaultRecovery: recoveryPackage
+    })
+    ;(globalThis as { chrome: typeof chrome }).chrome = mock.chromeMock as unknown as typeof chrome
+
+    render(createElement(PopupApp))
+
+    const user = userEvent.setup()
+    await user.type(await screen.findByLabelText("回復フレーズ"), "correct horse battery staple")
+    await user.click(screen.getByRole("button", { name: "Vault Keyを復元" }))
+
+    await waitFor(() => {
+      expect(mock.storageData.autofillSecureVaultKey).toEqual(secondVaultKey)
+    })
   })
 
   it("renders only the latest 20 event log entries", async () => {

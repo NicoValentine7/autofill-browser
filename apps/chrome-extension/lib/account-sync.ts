@@ -2,7 +2,7 @@ import type { AutofillSettings, DomainPolicy, StoredProfile } from "@autofill-br
 
 import { buildCloudWorkerUrl } from "./cloud-config"
 import { normalizeGoogleAuthUser } from "./google-auth"
-import type { SecureVaultState } from "./secure-vault"
+import type { SecureVaultRecoveryPackage, SecureVaultState } from "./secure-vault"
 import type { GoogleAuthUser, RemoteAutofillRules, StorageSnapshot } from "./storage"
 
 export type SyncField = "profile" | "settings" | "domainPolicies" | "secureVault"
@@ -15,6 +15,7 @@ export type SyncedSnapshot = {
   settings: AutofillSettings
   domainPolicies: Record<string, DomainPolicy>
   secureVault?: SecureVaultState
+  secureVaultRecovery?: SecureVaultRecoveryPackage
   updatedAt: string
   revision?: number
   baseRevision?: number
@@ -78,17 +79,26 @@ const authedJsonFetch = async <T>(
   }
 }
 
-export const buildSyncedSnapshot = (snapshot: StorageSnapshot, changedFields: SyncField[] = ALL_SYNC_FIELDS): SyncedSnapshot => ({
-  schemaVersion: 1,
-  profile: snapshot.profile,
-  settings: snapshot.settings,
-  domainPolicies: snapshot.domainPolicies,
-  secureVault: snapshot.secureVault,
-  updatedAt: new Date().toISOString(),
-  baseRevision: snapshot.accountSync.lastRevision ?? 0,
-  deviceId: snapshot.accountSync.deviceId,
-  changedFields
-})
+export const buildSyncedSnapshot = (snapshot: StorageSnapshot, changedFields: SyncField[] = ALL_SYNC_FIELDS): SyncedSnapshot => {
+  const shouldSyncSecureVault = changedFields.includes("secureVault")
+
+  return {
+    schemaVersion: 1,
+    profile: snapshot.profile,
+    settings: snapshot.settings,
+    domainPolicies: snapshot.domainPolicies,
+    ...(shouldSyncSecureVault
+      ? {
+          secureVault: snapshot.secureVault,
+          ...(snapshot.secureVaultRecovery ? { secureVaultRecovery: snapshot.secureVaultRecovery } : {})
+        }
+      : {}),
+    updatedAt: new Date().toISOString(),
+    baseRevision: snapshot.accountSync.lastRevision ?? 0,
+    deviceId: snapshot.accountSync.deviceId,
+    changedFields
+  }
+}
 
 export const fetchSignedInUser = async (googleAccessToken: string) => {
   const response = await authedJsonFetch<AuthMeResponse>("/me", googleAccessToken)

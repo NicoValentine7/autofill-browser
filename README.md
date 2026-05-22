@@ -77,6 +77,7 @@ pnpm dev:extension
 - 銀行/カード系の `field_learned_from_user` / `field_filled` / `field_corrected_by_user` イベントは、`previousValue` / `nextValue` を保存せず `values:redacted` だけ残します
 - PIN、パスワード、OTP、captcha、CSRF/token、合言葉/秘密の質問系は学習も自動入力もしません
 - Secure Vault は通常の `fieldMemory` と分離し、ローカルでは AES-GCM で暗号化して保存します。Google同期では暗号化済みのVault dataだけをD1へ保存し、Vault KeyはWorkerにもD1にも送信しません
+- 別PCでは、Googleログイン後にSecure Vaultの回復フレーズを入力すると、D1上のVault Recovery PackageからVault Keyをこの端末へ復元できます。回復フレーズは拡張側で高エントロピー生成し、PBKDF2-SHA256 600k iterations + AES-GCM AADでVault Keyを包み、保存・送信しません
 
 #### 拡張IDを固定する
 
@@ -107,15 +108,17 @@ pnpm build:extension
 
 Chrome の拡張機能管理画面で「デベロッパーモード」をONにし、「パッケージ化されていない拡張機能を読み込む」から `apps/chrome-extension/build/chrome-mv3-prod/` を選んでください。
 
-固定される拡張IDは `cjdfbkbfiengbkpejnjecgdgagipjkdk` です。標準のCloudflare Worker URLは拡張側に入っているため、別PCで最初に必要なのは基本的にGoogleログインだけです。ログインすると、Cloudflare D1の最新snapshotが自動で反映されます。
+固定される拡張IDは `cjdfbkbfiengbkpejnjecgdgagipjkdk` です。標準のCloudflare Worker URLは拡張側に入っているため、別PCで最初に必要なのは基本的にGoogleログインだけです。ログインすると、Cloudflare D1の最新snapshotが自動で反映されます。Secure Vaultの値を復号するには、popupで生成・保存した回復フレーズを入力してVault Keyを復元してください。
 
 #### Googleログインと設定同期
 
 Googleログインを使うと、初回ログイン時にAutofill Browser側のSystem Accountを作成し、そのGoogleアカウントをLinked Google Accountとして紐づけます。プロフィール、自動入力設定、ドメイン制御はSystem Account単位でCloudflare D1へ保存します。Googleアカウントはログイン手段であり、データの所有者はSystem Accountです。
 
-プロフィールとログの入力値はWorker secretの `CLOUD_DATA_ENCRYPTION_KEY` でAES-GCM暗号化してD1へ保存します。Secure VaultはZero-Knowledge Vaultとして扱い、クライアントで暗号化済みのVault dataだけを同期します。Vault Keyはローカルに残し、同期snapshotやWorker保存データには含めません。Worker URLや共有トークンはユーザー設定に含めません。
+プロフィールとログの入力値はWorker secretの `CLOUD_DATA_ENCRYPTION_KEY` でAES-GCM暗号化してD1へ保存します。Secure VaultはZero-Knowledge Vaultとして扱い、クライアントで暗号化済みのVault dataだけを同期します。Vault Keyはローカルに残し、同期snapshotやWorker保存データには含めません。Workerは inbound payload に `secureVaultKey` が残っている場合は `400` で拒否します。Worker URLや共有トークンはユーザー設定に含めません。
 
-別PCではGoogleログインでプロフィールや設定を復元できます。Secure Vaultの値は暗号化済みdataとして同期されますが、Vault Keyを別PCへ渡す回復/移行フローは今後追加する対象です。
+別PCではGoogleログインでプロフィールや設定を復元できます。Secure Vaultの値は暗号化済みdataとして同期され、Vault Keyは拡張側で生成した回復フレーズで包まれたVault Recovery Packageとして同期されます。別PCのpopupで回復フレーズを入力すると、その端末のローカルstorageへVault Keyを復元します。
+
+旧実装で万一 `secureVaultKey` を含む同期rowが残っている場合は、admin token付きで `POST /admin/sync-vault-scrub` を実行すると、current/history rowのlegacy keyを再暗号化または削除してscrubできます。
 
 同期snapshotには `deviceId`, `baseRevision`, `changedFields` が含まれます。別PCで同時編集が起きた場合、変更フィールドが被らなければWorker側で差分マージし、同じフィールドが競合した場合はクラウド側snapshotを返して拡張側が反映します。
 
