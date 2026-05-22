@@ -259,6 +259,47 @@ describe("content-controller", () => {
     expect((document.getElementById("member-id") as HTMLInputElement).value).toBe("MEM-12345")
   })
 
+  it("learns bank branch and account number inputs as custom fields", async () => {
+    const { chromeMock } = createChromeMock({
+      autofillProfile: emptyProfile
+    })
+    ;(globalThis as { chrome: typeof chrome }).chrome = chromeMock as unknown as typeof chrome
+    document.body.innerHTML = `
+      <label for="branch-code">INPUT_FORM:INPUT_BRANCH_CODE</label>
+      <input id="branch-code" name="INPUT_FORM:INPUT_BRANCH_CODE" />
+      <label for="account-number">INPUT_FORM:INPUT_ACCOUNT_NUMBER</label>
+      <input id="account-number" name="INPUT_FORM:INPUT_ACCOUNT_NUMBER" />
+    `
+
+    const controller = createAutofillController({
+      chromeApi: chromeMock as unknown as typeof chrome,
+      debounceMs: 10
+    })
+
+    await controller.initialize()
+    await vi.runAllTimersAsync()
+    await flush()
+
+    const branchField = document.getElementById("branch-code") as HTMLInputElement
+    branchField.value = "235"
+    branchField.dispatchEvent(new Event("input", { bubbles: true }))
+    branchField.dispatchEvent(new Event("blur", { bubbles: true }))
+
+    const accountField = document.getElementById("account-number") as HTMLInputElement
+    accountField.value = "1234567"
+    accountField.dispatchEvent(new Event("input", { bubbles: true }))
+    accountField.dispatchEvent(new Event("blur", { bubbles: true }))
+
+    await vi.runAllTimersAsync()
+    await flush()
+
+    const snapshot = await getStorageSnapshot()
+    const learnedValues = Object.values(snapshot.fieldMemory).map((entry) => entry.lastUserValue)
+
+    expect(learnedValues).toEqual(expect.arrayContaining(["235", "1234567"]))
+    expect(snapshot.eventLog.filter((entry: { type: string }) => entry.type === "field_learned_from_user")).toHaveLength(2)
+  })
+
   it("does not learn dangerous manual inputs", async () => {
     const { chromeMock } = createChromeMock({
       autofillProfile: emptyProfile

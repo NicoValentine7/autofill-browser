@@ -123,6 +123,7 @@ export const createAutofillController = ({
   const learningState = new WeakMap<FieldElement, LearningState>()
   const internalAutofillFields = new WeakSet<FieldElement>()
   const processedRunKeys = new Set<string>()
+  let learnedInputPersistQueue: Promise<void> = Promise.resolve()
 
   const loadSnapshot = async () => {
     snapshot = await getStorageSnapshot()
@@ -325,6 +326,14 @@ export const createAutofillController = ({
     })
   }
 
+  const queueLearnedInputPersist = (field: FieldElement, state: LearningState) => {
+    learnedInputPersistQueue = learnedInputPersistQueue
+      .catch(() => undefined)
+      .then(() => persistLearnedInput(field, state))
+
+    return learnedInputPersistQueue
+  }
+
   const attachLearningTracking = (field: FieldElement) => {
     if (field.dataset.autofillLearnTracked === "true") {
       return
@@ -350,12 +359,12 @@ export const createAutofillController = ({
       }
 
       if (immediate) {
-        void persistLearnedInput(field, activeState)
+        void queueLearnedInputPersist(field, activeState)
         return
       }
 
       activeState.timerId = windowObject.setTimeout(() => {
-        void persistLearnedInput(field, activeState)
+        void queueLearnedInputPersist(field, activeState)
       }, 400)
     }
 

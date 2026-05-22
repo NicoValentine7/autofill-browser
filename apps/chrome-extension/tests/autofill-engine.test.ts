@@ -217,6 +217,52 @@ describe("autofill-engine", () => {
     expect(values["member-id"]).toBe("MEM-12345")
   })
 
+  it("keeps learned bank branch and account number fields fillable", () => {
+    document.body.innerHTML = `
+      <label for="branch-code">INPUT_FORM:INPUT_BRANCH_CODE</label>
+      <input id="branch-code" name="INPUT_FORM:INPUT_BRANCH_CODE" />
+      <label for="account-number">INPUT_FORM:INPUT_ACCOUNT_NUMBER</label>
+      <input id="account-number" name="INPUT_FORM:INPUT_ACCOUNT_NUMBER" />
+    `
+    const branchField = document.getElementById("branch-code") as HTMLInputElement
+    const accountField = document.getElementById("account-number") as HTMLInputElement
+    const branchSignature = buildFieldSignature(buildFieldDescriptor(branchField))
+    const accountSignature = buildFieldSignature(buildFieldDescriptor(accountField))
+    const snapshot = createSnapshot()
+    snapshot.profile = createEmptyProfile()
+    snapshot.fieldMemory = {
+      [`example.com::${branchSignature}`]: {
+        hostname: "example.com",
+        fieldSignature: branchSignature,
+        learnedLabel: "INPUT_FORM:INPUT_BRANCH_CODE",
+        lastAutofilledValue: "",
+        lastUserValue: "235",
+        timesAutofilled: 0,
+        timesCorrected: 0,
+        timesLearned: 1,
+        updatedAt: new Date().toISOString()
+      },
+      [`example.com::${accountSignature}`]: {
+        hostname: "example.com",
+        fieldSignature: accountSignature,
+        learnedLabel: "INPUT_FORM:INPUT_ACCOUNT_NUMBER",
+        lastAutofilledValue: "",
+        lastUserValue: "1234567",
+        timesAutofilled: 0,
+        timesCorrected: 0,
+        timesLearned: 1,
+        updatedAt: new Date().toISOString()
+      }
+    }
+
+    const values = valueById(snapshot)
+
+    expect(values).toMatchObject({
+      "branch-code": "235",
+      "account-number": "1234567"
+    })
+  })
+
   it("does not let custom field memory re-enable one-time-code fields", () => {
     document.body.innerHTML = `
       <label for="otp">Email OTP</label>
