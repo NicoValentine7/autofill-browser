@@ -1,7 +1,7 @@
 {
   "name": "chrome-extension",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "scripts": {
     "dev": "plasmo dev",
@@ -28,7 +28,7 @@
   },
   "manifest": {
     "name": "Autofill Browser",
-    "description": "Prototype extension for browser-side form autofill.",
+    "description": "Cloud-synced form autofill with secure vault support.",
     "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAlht9GrPwAm/kyo5ZJySCvoxLXhhsO9i4Vq10QQCX+mNBYlBisyQjI7QfWt0czuVN0PAjegFWJT5BZQlL/EQ9e+7f1d5/tr2Ps1gl/VzavstEBd/VEJn2q4WJqT9p4npu4S77AMNOtdRRNytLXTaMo74MnGXUZQR1U+W2IrYVw+fB7jRZeXbiY1j1It9SjBSDc4SaTHEh3Ro+AkJ2nf3ve3wryVRuqQIevo64ulANzN2g/8icuNkAcKd2eX3GeXMGZdV1VCtexK8LM0qyrHrKl71EStI5nOA73fxwn1KbV0mwRaLkL7zaNsneW972AywkDX5I0U+tawjbhUFnX6dVnwIDAQAB",
     "permissions": [
       "activeTab",

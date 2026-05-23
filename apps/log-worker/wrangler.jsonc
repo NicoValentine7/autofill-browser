@@ -13,7 +13,8 @@
     ]
   },
   "vars": {
-    "GOOGLE_OAUTH_CLIENT_ID": "456050823963-n1hkblddhgbkfa4ihb1u6cgicmfvpbp5.apps.googleusercontent.com"
+    "GOOGLE_OAUTH_CLIENT_ID": "456050823963-n1hkblddhgbkfa4ihb1u6cgicmfvpbp5.apps.googleusercontent.com",
+    "GOOGLE_OAUTH_CLIENT_IDS": "456050823963-n1hkblddhgbkfa4ihb1u6cgicmfvpbp5.apps.googleusercontent.com,456050823963-ot77o31ogdo0caiesth9tdvhik7lj9vr.apps.googleusercontent.com"
   },
   "d1_databases": [
     {

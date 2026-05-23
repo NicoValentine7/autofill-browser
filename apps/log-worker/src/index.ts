@@ -20,6 +20,7 @@ export type Env = {
   DB: D1Database
   CLOUD_LOG_INGEST_TOKEN?: string
   GOOGLE_OAUTH_CLIENT_ID?: string
+  GOOGLE_OAUTH_CLIENT_IDS?: string
   CLOUD_DATA_ENCRYPTION_KEY?: string
 }
 
@@ -451,9 +452,18 @@ const toOptionalString = (value: unknown) => (typeof value === "string" && value
 
 const isVerifiedEmail = (value: unknown) => value === true || value === "true"
 
+const getExpectedGoogleClientIds = (env: Env) =>
+  [
+    ...(env.GOOGLE_OAUTH_CLIENT_IDS ?? "")
+      .split(",")
+      .map((clientId) => clientId.trim())
+      .filter(Boolean),
+    env.GOOGLE_OAUTH_CLIENT_ID?.trim()
+  ].filter((clientId, index, clientIds): clientId is string => Boolean(clientId) && clientIds.indexOf(clientId) === index)
+
 const verifyGoogleToken = async (token: string, env: Env): Promise<Omit<AuthUser, "id"> | null> => {
-  const expectedClientId = env.GOOGLE_OAUTH_CLIENT_ID?.trim()
-  if (!token || !expectedClientId) {
+  const expectedClientIds = getExpectedGoogleClientIds(env)
+  if (!token || expectedClientIds.length === 0) {
     return null
   }
 
@@ -478,7 +488,7 @@ const verifyGoogleToken = async (token: string, env: Env): Promise<Omit<AuthUser
     return null
   }
 
-  if (aud !== expectedClientId && azp !== expectedClientId) {
+  if (!expectedClientIds.includes(aud ?? "") && !expectedClientIds.includes(azp ?? "")) {
     return null
   }
 
@@ -1857,6 +1867,75 @@ const adminDashboardHtml = `<!doctype html>
 
 const handleAdminDashboard = () => html(adminDashboardHtml)
 
+const privacyPolicyHtml = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Autofill Browser Privacy Policy</title>
+    <style>
+      :root { color-scheme: light dark; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      body { margin: 0; background: Canvas; color: CanvasText; }
+      main { max-width: 760px; margin: 0 auto; padding: 48px 20px 72px; line-height: 1.65; }
+      h1 { font-size: 32px; line-height: 1.15; margin: 0 0 8px; }
+      h2 { font-size: 20px; margin: 32px 0 8px; }
+      p, li { font-size: 16px; }
+      .muted { color: color-mix(in srgb, CanvasText 70%, Canvas); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Autofill Browser Privacy Policy</h1>
+      <p class="muted">Effective date: May 23, 2026</p>
+
+      <h2>Purpose</h2>
+      <p>
+        Autofill Browser helps users fill repetitive web forms from a profile and vault they control.
+        The extension uses user data only to provide autofill, settings sync, domain controls, activity logs,
+        and encrypted Secure Vault recovery.
+      </p>
+
+      <h2>Data We Process</h2>
+      <ul>
+        <li>Profile data, such as name, email address, phone number, organization, postal code, and address fields.</li>
+        <li>Autofill settings, domain allow/block preferences, and remote autofill safety rules.</li>
+        <li>Google sign-in account identifiers used for sync, such as Google subject ID, email address, display name, and picture URL.</li>
+        <li>Autofill event data, such as hostname, URL, field signature, profile key, event type, timestamps, and field values when logging is enabled by the extension behavior.</li>
+        <li>Secure Vault data for reusable sensitive form values, such as bank branch or account details, stored as client-encrypted vault records.</li>
+      </ul>
+
+      <h2>Data We Do Not Intentionally Store</h2>
+      <p>
+        The extension is designed not to save or autofill passwords, one-time codes, verification codes,
+        captchas, CVV/CVC values, or equivalent authentication secrets.
+      </p>
+
+      <h2>Storage and Security</h2>
+      <p>
+        Cloud sync is handled by a Cloudflare Worker and Cloudflare D1. Profile, settings, domain controls,
+        and event logs are transmitted over HTTPS and encrypted by the service before being stored.
+        Secure Vault values are encrypted on the client before sync. The raw Vault Key is not sent to the Worker
+        or stored in D1.
+      </p>
+
+      <h2>Sharing and Sale</h2>
+      <p>
+        We do not sell user data. We do not transfer user data for purposes unrelated to Autofill Browser's
+        single purpose, and we do not use user data for creditworthiness or lending decisions.
+      </p>
+
+      <h2>User Control</h2>
+      <p>
+        Users can edit or remove profile and vault data in the extension, disable autofill for domains,
+        clear Chrome extension storage, or uninstall the extension. Removing synced data from the cloud may
+        require contacting the developer through the Chrome Web Store listing support channel.
+      </p>
+    </main>
+  </body>
+</html>`
+
+const handlePrivacyPolicy = () => html(privacyPolicyHtml)
+
 const handleRequest = async (request: Request, env: Env) => {
   if (request.method === "OPTIONS") {
     return new Response(null, {
@@ -1866,6 +1945,10 @@ const handleRequest = async (request: Request, env: Env) => {
   }
 
   const url = new URL(request.url)
+  if (url.pathname === "/privacy" || url.pathname === "/privacy/") {
+    return handlePrivacyPolicy()
+  }
+
   if (url.pathname === "/admin" || url.pathname === "/admin/") {
     return handleAdminDashboard()
   }

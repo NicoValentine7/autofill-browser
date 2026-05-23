@@ -333,11 +333,12 @@ class FakeD1Database implements D1Database {
   }
 }
 
-const createEnv = () => ({
+const createEnv = (override: Partial<Env> = {}) => ({
   DB: new FakeD1Database(),
   CLOUD_LOG_INGEST_TOKEN: "secret-token",
   GOOGLE_OAUTH_CLIENT_ID: "google-client-id.apps.googleusercontent.com",
-  CLOUD_DATA_ENCRYPTION_KEY: "unit-test-encryption-key"
+  CLOUD_DATA_ENCRYPTION_KEY: "unit-test-encryption-key",
+  ...override
 })
 
 const authHeaders = {
@@ -502,6 +503,27 @@ describe("log-worker", () => {
       sub: "google-sub-1",
       email: "taro@example.com"
     })
+    expect(env.DB.users).toHaveLength(1)
+  })
+
+  it("accepts Google client IDs from the comma-separated allowlist", async () => {
+    const env = createEnv({
+      GOOGLE_OAUTH_CLIENT_ID: "local-client.apps.googleusercontent.com",
+      GOOGLE_OAUTH_CLIENT_IDS: "local-client.apps.googleusercontent.com,store-client.apps.googleusercontent.com"
+    })
+    mockGoogleTokenInfo({
+      aud: "ignored-platform-client.apps.googleusercontent.com",
+      azp: "store-client.apps.googleusercontent.com"
+    })
+
+    const response = await worker.fetch(
+      new Request("https://logs.example.com/me", {
+        headers: googleHeaders
+      }),
+      env
+    )
+
+    expect(response.status).toBe(200)
     expect(env.DB.users).toHaveLength(1)
   })
 
@@ -1204,5 +1226,14 @@ describe("log-worker", () => {
     expect(dashboardResponse.headers.get("content-type")).toContain("text/html")
     expect(await dashboardResponse.text()).toContain("Autofill Browser Admin")
     expect(unauthorizedResponse.status).toBe(401)
+  })
+
+  it("serves the public privacy policy without authentication", async () => {
+    const env = createEnv()
+    const response = await worker.fetch(new Request("https://logs.example.com/privacy"), env)
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get("content-type")).toContain("text/html")
+    expect(await response.text()).toContain("Autofill Browser Privacy Policy")
   })
 })

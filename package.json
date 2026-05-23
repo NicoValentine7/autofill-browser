@@ -1,11 +1,14 @@
 {
   "name": "autofill-browser",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "packageManager": "pnpm@10.8.1",
   "scripts": {
     "dev:extension": "pnpm --filter chrome-extension dev",
     "build:extension": "pnpm --filter chrome-extension build",
+    "package:extension": "node scripts/package-extension-zip.mjs",
+    "package:webstore": "node scripts/package-webstore-zip.mjs",
+    "assets:webstore": "node scripts/generate-webstore-assets.mjs",
     "typecheck:extension": "pnpm --filter chrome-extension typecheck",
     "test:extension": "pnpm --filter chrome-extension test",
     "dev:log-worker": "pnpm --dir apps/log-worker dev",
