@@ -22,7 +22,7 @@ This gives the product a small 1Password-like foothold without weakening the exi
 
 ## Consequences
 
-API token labels should not contain the secret value, because labels are list metadata. The copied token may still enter the system clipboard by explicit user action, so copy is treated as a user-triggered handoff rather than automatic fill.
+API token labels should not contain the secret value, because labels are list metadata. The copied token may still enter the system clipboard by explicit user action, so copy is treated as a user-triggered handoff rather than automatic fill. The extension may request `clipboardWrite` so the popup copy button can work reliably, but it must not request clipboard read access for this feature.
 
 Future secret item types, such as passwords, SSH keys, recovery codes, and secret notes, should follow the same explicit-item pattern unless a separate ADR accepts a different boundary.
 
@@ -32,3 +32,5 @@ Future secret item types, such as passwords, SSH keys, recovery codes, and secre
 - The local stored Secure Vault state does not contain the API token plaintext, service URL, account name, or notes.
 - `token` and `api_token` web form fields remain blocked from automatic learning and autofill.
 - Sync payloads continue to reject `secureVaultKey` and contain only encrypted Vault Entry values.
+- The popup copy button writes only the decrypted API token value to the clipboard.
+- The extension manifest declares `clipboardWrite` and does not declare clipboard read access for API Token Vault.

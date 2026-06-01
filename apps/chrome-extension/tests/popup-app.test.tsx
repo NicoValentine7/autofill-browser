@@ -43,6 +43,10 @@ const secondVaultKey: SecureVaultKey = {
 describe("PopupApp", () => {
   afterEach(() => {
     vi.unstubAllGlobals()
+    Object.defineProperty(globalThis.navigator, "clipboard", {
+      value: undefined,
+      configurable: true
+    })
   })
 
   it("migrates a legacy persisted Secure Vault key into session storage", async () => {
@@ -406,6 +410,48 @@ describe("PopupApp", () => {
     expect(JSON.stringify(mock.storageData.autofillSecureVault)).not.toContain("https://api.github.com")
     expect(JSON.stringify(mock.storageData.autofillSecureVault)).not.toContain("deploy-bot")
     expect(mock.sessionStorageData.autofillSecureVaultKey).toBeTruthy()
+  })
+
+  it("copies and deletes saved API token vault items", async () => {
+    const writeText = vi.fn(async () => undefined)
+    const mock = createChromeMock({
+      autofillProfile: {
+        ...createEmptyProfile(),
+        fullName: "山田 太郎"
+      }
+    })
+    ;(globalThis as { chrome: typeof chrome }).chrome = mock.chromeMock as unknown as typeof chrome
+
+    render(createElement(PopupApp))
+
+    const user = userEvent.setup()
+    Object.defineProperty(globalThis.navigator, "clipboard", {
+      value: {
+        writeText
+      },
+      configurable: true
+    })
+    await user.type(await screen.findByLabelText("API token名"), "GitHub production")
+    await user.type(screen.getByLabelText("サービスURL"), "https://api.github.com")
+    await user.type(screen.getByLabelText("アカウント"), "deploy-bot")
+    await user.type(screen.getByLabelText("API token"), "ghp_test_secret")
+    await user.click(screen.getByRole("button", { name: "API tokenを保存" }))
+
+    expect(await screen.findByText("deploy-bot / https://api.github.com")).toBeTruthy()
+    const copyButton = screen.getByRole("button", { name: "コピー" }) as HTMLButtonElement
+    await waitFor(() => {
+      expect(copyButton.disabled).toBe(false)
+    })
+
+    await user.click(copyButton)
+    expect(writeText).toHaveBeenCalledWith("ghp_test_secret")
+
+    await user.click(screen.getByRole("button", { name: "削除" }))
+    await waitFor(async () => {
+      const snapshot = await getStorageSnapshot()
+      expect(Object.values(snapshot.secureVault.entries).filter((entry) => entry.kind === "api-token")).toHaveLength(0)
+    })
+    expect(screen.queryByText("GitHub production")).toBeNull()
   })
 
   it("does not treat a leftover local vault key as usable for a different recovery package", async () => {

@@ -34,7 +34,8 @@
       "activeTab",
       "storage",
       "identity",
-      "identity.email"
+      "identity.email",
+      "clipboardWrite"
     ],
     "host_permissions": [
       "<all_urls>"
