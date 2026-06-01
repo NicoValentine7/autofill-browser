@@ -89,13 +89,17 @@ Codex や Claude Code から開発用 API token を使う場合は、Chrome popu
 ```bash
 export AUTOFILL_AGENT_VAULT_PASSPHRASE="24文字以上のローカルpassphrase"
 
-printf '%s' "$GITHUB_TOKEN" | pnpm agent-vault put github --value-stdin --label "GitHub"
+export CLOUDFLARE_API_TOKEN="<cloudflare-api-token>"
+pnpm agent-vault put cloudflare
+pnpm agent-vault run cloudflare -- npx wrangler whoami
+
+printf '%s' "$GITHUB_TOKEN" | pnpm agent-vault put github --value-stdin
 pnpm agent-vault list --json
 pnpm agent-vault read github
-pnpm agent-vault run --env GITHUB_TOKEN=github -- gh auth status
+pnpm agent-vault run github -- gh auth status
 ```
 
-`put` は `--value-stdin` か `--value-env TOKEN_ENV_NAME` を使い、tokenをコマンド引数に直接載せないでください。`run --env` は指定したtokenだけを子プロセスへ渡し、`AUTOFILL_AGENT_VAULT_PASSPHRASE` は子プロセス環境から外します。CLIの実動作確認は以下です。
+`cloudflare` と `github` はプリセットです。`pnpm agent-vault presets` で確認できます。プリセットでは `put cloudflare` が `CLOUDFLARE_API_TOKEN` を自動で読み、`run cloudflare -- ...` が `CLOUDFLARE_API_TOKEN` を子プロセスへ注入します。カスタムtokenは `--value-stdin` か `--value-env TOKEN_ENV_NAME` を使い、tokenをコマンド引数に直接載せないでください。`run` は指定したtokenだけを子プロセスへ渡し、`AUTOFILL_AGENT_VAULT_PASSPHRASE` は子プロセス環境から外します。CLIの実動作確認は以下です。
 
 ```bash
 pnpm verify:agent-vault

@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process"
 
 const passphrase = "codex-agent-vault-passphrase-for-e2e"
 const token = "agent_vault_dummy_secret"
+const cloudflareToken = "cloudflare_agent_vault_dummy_secret"
 
 const runCli = (args, options = {}) =>
   spawnSync("node", ["scripts/agent-vault.mjs", ...args], {
@@ -50,8 +51,21 @@ try {
   )
   assertSuccess(putResult, "put")
 
+  const putPresetResult = runCli(["--vault-path", vaultPath, "put", "cloudflare"], {
+    env: {
+      CLOUDFLARE_API_TOKEN: cloudflareToken
+    }
+  })
+  assertSuccess(putPresetResult, "put preset")
+
   const rawVault = await readFile(vaultPath, "utf8")
-  if (rawVault.includes(token) || rawVault.includes("https://api.github.com") || rawVault.includes("deploy-bot")) {
+  if (
+    rawVault.includes(token) ||
+    rawVault.includes(cloudflareToken) ||
+    rawVault.includes("https://api.github.com") ||
+    rawVault.includes("https://api.cloudflare.com") ||
+    rawVault.includes("deploy-bot")
+  ) {
     throw new Error("vault file contains plaintext token payload")
   }
 
@@ -72,8 +86,11 @@ try {
     throw new Error("list leaked token plaintext")
   }
   const listed = JSON.parse(listResult.stdout)
-  if (listed.items?.[0]?.name !== "github" || listed.items[0].label !== "GitHub") {
+  if (!listed.items?.some((item) => item.name === "github" && item.label === "GitHub")) {
     throw new Error("list did not return saved item metadata")
+  }
+  if (!listed.items.some((item) => item.name === "cloudflare" && item.label === "Cloudflare")) {
+    throw new Error("list did not return saved preset metadata")
   }
 
   const runResult = runCli([
@@ -92,8 +109,31 @@ try {
     throw new Error("run did not inject only the requested token env")
   }
 
+  const runPresetResult = runCli([
+    "--vault-path",
+    vaultPath,
+    "run",
+    "cloudflare",
+    "--",
+    "node",
+    "-e",
+    "process.stdout.write(process.env.CLOUDFLARE_API_TOKEN || '')"
+  ])
+  assertSuccess(runPresetResult, "run preset")
+  if (runPresetResult.stdout !== cloudflareToken) {
+    throw new Error("run preset did not inject CLOUDFLARE_API_TOKEN")
+  }
+
+  const presetsResult = runCli(["presets", "--json"])
+  assertSuccess(presetsResult, "presets")
+  const presets = JSON.parse(presetsResult.stdout)
+  if (!presets.presets?.some((preset) => preset.name === "cloudflare" && preset.envName === "CLOUDFLARE_API_TOKEN")) {
+    throw new Error("presets did not include cloudflare")
+  }
+
   const deleteResult = runCli(["--vault-path", vaultPath, "delete", "github"])
   assertSuccess(deleteResult, "delete")
+  assertSuccess(runCli(["--vault-path", vaultPath, "delete", "cloudflare"]), "delete preset")
 
   const emptyListResult = runCli(["--vault-path", vaultPath, "list", "--json"])
   assertSuccess(emptyListResult, "empty list")
@@ -105,7 +145,7 @@ try {
     JSON.stringify(
       {
         ok: true,
-        checks: ["put", "encrypted-file", "0600", "read", "list-redacted", "run-env", "delete"]
+        checks: ["put", "put-preset", "encrypted-file", "0600", "read", "list-redacted", "run-env", "run-preset", "presets", "delete"]
       },
       null,
       2

@@ -17,13 +17,31 @@ import {
   writeAgentVaultFile
 } from "./agent-vault-lib.mjs"
 
+const AGENT_VAULT_PRESETS = {
+  cloudflare: {
+    name: "cloudflare",
+    envName: "CLOUDFLARE_API_TOKEN",
+    label: "Cloudflare",
+    serviceUrl: "https://api.cloudflare.com/client/v4"
+  },
+  github: {
+    name: "github",
+    envName: "GITHUB_TOKEN",
+    label: "GitHub",
+    serviceUrl: "https://api.github.com"
+  }
+}
+
 const usage = `Usage:
+  pnpm agent-vault put cloudflare
   pnpm agent-vault put <name> --value-stdin [--label <label>] [--service-url <url>] [--account <name>] [--notes <text>]
   pnpm agent-vault put <name> --value-env <ENV_NAME> [--label <label>]
   pnpm agent-vault read <name>
   pnpm agent-vault list [--json]
   pnpm agent-vault delete <name>
+  pnpm agent-vault run cloudflare -- <command> [args...]
   pnpm agent-vault run --env <ENV_NAME>=<item-name> [--env <ENV_NAME>=<item-name>] -- <command> [args...]
+  pnpm agent-vault presets [--json]
 
 Options:
   --vault-path <path>   Agent Vault file path. Defaults to ${DEFAULT_AGENT_VAULT_PATH}
@@ -31,6 +49,9 @@ Options:
 Required env:
   ${AGENT_VAULT_PASSPHRASE_ENV} must be set for put/read/delete/run.
 `
+
+const getAgentVaultPreset = (name) => AGENT_VAULT_PRESETS[String(name ?? "").trim().toLowerCase()] ?? null
+const listAgentVaultPresets = () => Object.values(AGENT_VAULT_PRESETS).sort((left, right) => left.name.localeCompare(right.name))
 
 const takeOptionValue = (args, index, optionName) => {
   const value = args[index + 1]
@@ -120,19 +141,21 @@ const handlePut = async (args, vaultPath) => {
   if (!name) {
     throw new AgentVaultError("put requires an item name.", "MISSING_ITEM_NAME")
   }
+  const preset = getAgentVaultPreset(name)
 
   if (values.valueStdin && values.valueEnv) {
     throw new AgentVaultError("Use either --value-stdin or --value-env, not both.", "AMBIGUOUS_TOKEN_SOURCE")
   }
 
+  const inferredEnvName = values.valueEnv ? validateAgentVaultEnvName(values.valueEnv) : preset?.envName
   const token = values.valueStdin
     ? await readStdin()
-    : values.valueEnv
-      ? process.env[validateAgentVaultEnvName(values.valueEnv)]
+    : inferredEnvName
+      ? process.env[inferredEnvName]
       : null
 
-  if (values.valueEnv && !token) {
-    throw new AgentVaultError(`Environment variable is empty or missing: ${values.valueEnv}`, "MISSING_TOKEN_ENV")
+  if (inferredEnvName && !token) {
+    throw new AgentVaultError(`Environment variable is empty or missing: ${inferredEnvName}`, "MISSING_TOKEN_ENV")
   }
 
   const currentVault = await readAgentVaultFile(vaultPath)
@@ -141,8 +164,8 @@ const handlePut = async (args, vaultPath) => {
     passphrase: requirePassphrase(),
     name,
     token,
-    label: values.label,
-    serviceUrl: values.serviceUrl,
+    label: values.label ?? preset?.label,
+    serviceUrl: values.serviceUrl ?? preset?.serviceUrl,
     accountName: values.accountName,
     notes: values.notes
   })
@@ -219,7 +242,15 @@ const parseRunArgs = (args) => {
 
   for (let index = 0; index < separatorIndex; index += 1) {
     if (args[index] !== "--env") {
-      throw new AgentVaultError(`Unknown run option: ${args[index]}`, "UNKNOWN_OPTION")
+      const preset = getAgentVaultPreset(args[index])
+      if (!preset) {
+        throw new AgentVaultError(`Unknown run preset: ${args[index]}. Use --env ENV_NAME=item for custom items.`, "UNKNOWN_RUN_PRESET")
+      }
+      envMappings.push({
+        envName: preset.envName,
+        itemName: preset.name
+      })
+      continue
     }
     const mapping = args[index + 1]
     if (!mapping) {
@@ -291,6 +322,21 @@ const handleRun = async (args, vaultPath) => {
   })
 }
 
+const handlePresets = (args) => {
+  const { values } = parseCommandOptions(args, {
+    "--json": { name: "json", type: "boolean" }
+  })
+  const presets = listAgentVaultPresets()
+  if (values.json) {
+    output.write(`${JSON.stringify({ presets }, null, 2)}\n`)
+    return
+  }
+
+  for (const preset of presets) {
+    output.write(`${preset.name}\t${preset.envName}\t${preset.label}\n`)
+  }
+}
+
 const main = async () => {
   const { command, args, vaultPath } = parseGlobalOptions(process.argv.slice(2))
   const resolvedVaultPath = resolveAgentVaultPath(vaultPath)
@@ -313,6 +359,9 @@ const main = async () => {
       break
     case "run":
       await handleRun(args, resolvedVaultPath)
+      break
+    case "presets":
+      handlePresets(args)
       break
     default:
       throw new AgentVaultError(`Unknown command: ${command}`, "UNKNOWN_COMMAND")

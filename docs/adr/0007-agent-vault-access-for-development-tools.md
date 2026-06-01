@@ -15,9 +15,12 @@ Add a separate local Agent Vault operated by `pnpm agent-vault`. The default fil
 The CLI supports:
 
 - `put <name>` with `--value-stdin` or `--value-env` for saving API Tokens without putting token values in command arguments.
+- Preset names such as `cloudflare` and `github`, so `put cloudflare` can infer `CLOUDFLARE_API_TOKEN` and safe non-secret metadata.
 - `read <name>` for explicit token handoff to stdout.
 - `run --env ENV_NAME=item -- <command>` for scoped subprocess environment injection.
+- `run cloudflare -- <command>` and other preset shortcuts for common development tools.
 - `list` and `delete` for management.
+- `presets` for discovering supported shortcuts and their environment variables.
 
 `run` removes `AUTOFILL_AGENT_VAULT_PASSPHRASE` from the child process environment and injects only the requested token variables.
 
@@ -40,4 +43,5 @@ Keeping Agent Vault separate avoids pretending that a terminal process has the s
 - Listing items exposes only non-secret metadata.
 - Reading with the wrong passphrase fails.
 - `run --env` injects requested token values into the child process and does not pass `AUTOFILL_AGENT_VAULT_PASSPHRASE` onward.
+- Preset shortcuts can save a Cloudflare token from `CLOUDFLARE_API_TOKEN` and inject it with `run cloudflare -- <command>`.
 - The CLI can save, read, list, inject, and delete a dummy API Token through an automated verifier.
