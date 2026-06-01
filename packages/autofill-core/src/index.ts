@@ -95,6 +95,7 @@ export type EventLogType =
   | "profile_updated"
   | "manual_autofill_triggered"
   | "vault_item_created"
+  | "vault_item_updated"
   | "vault_item_deleted"
 
 export type EventLogEntry = {

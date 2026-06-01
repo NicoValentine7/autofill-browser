@@ -11,6 +11,7 @@ import {
   createManualSecureVaultValueUpdate,
   createSecureVaultRecoveryPackage,
   generateSecureVaultRecoveryPhrase,
+  getSecureVaultEntryKey,
   isManualSecureVaultItem,
   parseSecureVaultApiTokenItemPayload,
   recoverSecureVaultKey,
@@ -90,6 +91,7 @@ const eventTypeLabels: Record<EventLogEntry["type"], string> = {
   profile_updated: "プロフィール更新",
   manual_autofill_triggered: "手動再実行",
   vault_item_created: "Vault項目を追加",
+  vault_item_updated: "Vault項目を更新",
   vault_item_deleted: "Vault項目を削除"
 }
 
@@ -143,6 +145,7 @@ function PopupApp() {
   const [apiTokenValue, setApiTokenValue] = useState("")
   const [apiTokenNotes, setApiTokenNotes] = useState("")
   const [showApiTokenValue, setShowApiTokenValue] = useState(false)
+  const [editingApiTokenEntryKey, setEditingApiTokenEntryKey] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<ActiveTabContext>({ hostname: "", url: "" })
   const [status, setStatus] = useState("読み込み中やで")
 
@@ -286,6 +289,7 @@ function PopupApp() {
     entry,
     payload: parseSecureVaultApiTokenItemPayload(snapshot.secureVaultValues[entryKey])
   }))
+  const editingApiTokenEntry = editingApiTokenEntryKey ? snapshot.secureVault.entries[editingApiTokenEntryKey] : undefined
 
   const handleProfileFieldChange = (key: keyof StoredProfile, value: string) => {
     setProfileForm((current) => ({
@@ -456,6 +460,16 @@ function PopupApp() {
     setStatus("Vault Keyをこの端末へ復元したで")
   }
 
+  const resetApiTokenForm = () => {
+    setApiTokenLabel("")
+    setApiTokenServiceUrl("")
+    setApiTokenAccountName("")
+    setApiTokenValue("")
+    setApiTokenNotes("")
+    setShowApiTokenValue(false)
+    setEditingApiTokenEntryKey(null)
+  }
+
   const handleSaveApiToken = async () => {
     const value = apiTokenValue.trim()
     if (!value) {
@@ -463,9 +477,20 @@ function PopupApp() {
       return
     }
 
-    const nextSnapshot = await commitStorageChanges({
-      secureVaultUpdates: [
-        createManualSecureVaultValueUpdate({
+    const nextUpdate = editingApiTokenEntry
+      ? {
+          hostname: editingApiTokenEntry.hostname,
+          fieldSignature: editingApiTokenEntry.fieldSignature,
+          kind: "api-token" as const,
+          value: stringifySecureVaultApiTokenItemPayload({
+            token: value,
+            serviceUrl: apiTokenServiceUrl,
+            accountName: apiTokenAccountName,
+            notes: apiTokenNotes
+          }),
+          label: apiTokenLabel.trim() || editingApiTokenEntry.label || "API token"
+        }
+      : createManualSecureVaultValueUpdate({
           kind: "api-token",
           value: stringifySecureVaultApiTokenItemPayload({
             token: value,
@@ -475,10 +500,12 @@ function PopupApp() {
           }),
           label: apiTokenLabel.trim() || "API token"
         })
-      ],
+
+    const nextSnapshot = await commitStorageChanges({
+      secureVaultUpdates: [nextUpdate],
       eventEntries: [
         {
-          type: "vault_item_created",
+          type: editingApiTokenEntry ? "vault_item_updated" : "vault_item_created",
           hostname: "",
           url: "",
           source: "popup-ui",
@@ -488,14 +515,26 @@ function PopupApp() {
     })
 
     setSnapshot(nextSnapshot)
-    setApiTokenLabel("")
-    setApiTokenServiceUrl("")
-    setApiTokenAccountName("")
-    setApiTokenValue("")
-    setApiTokenNotes("")
-    setShowApiTokenValue(false)
+    resetApiTokenForm()
     await pushSnapshotIfSignedIn(nextSnapshot, ["secureVault"])
-    setStatus("API tokenをVaultに保存したで")
+    setStatus(editingApiTokenEntry ? "API tokenを更新したで" : "API tokenをVaultに保存したで")
+  }
+
+  const handleEditApiToken = (entryKey: string, entry: SecureVaultEntry) => {
+    const payload = parseSecureVaultApiTokenItemPayload(snapshot.secureVaultValues[entryKey])
+    if (!payload?.token) {
+      setStatus("Vault Keyを復元してから編集してな")
+      return
+    }
+
+    setEditingApiTokenEntryKey(entryKey)
+    setApiTokenLabel(entry.label ?? "API token")
+    setApiTokenServiceUrl(payload.serviceUrl ?? "")
+    setApiTokenAccountName(payload.accountName ?? "")
+    setApiTokenValue(payload.token)
+    setApiTokenNotes(payload.notes ?? "")
+    setShowApiTokenValue(false)
+    setStatus(`${entry.label ?? "API token"} を編集中やで`)
   }
 
   const handleCopyApiToken = async (entryKey: string, entry: SecureVaultEntry) => {
@@ -543,6 +582,9 @@ function PopupApp() {
     })
 
     setSnapshot(nextSnapshot)
+    if (editingApiTokenEntryKey === getSecureVaultEntryKey(entry.hostname, entry.fieldSignature)) {
+      resetApiTokenForm()
+    }
     await pushSnapshotIfSignedIn(nextSnapshot, ["secureVault"])
     setStatus("API tokenを削除したで")
   }
@@ -700,6 +742,11 @@ function PopupApp() {
       <section style={sectionStyle}>
         <h2 style={{ margin: "0 0 8px", fontSize: 14 }}>API Token Vault</h2>
         <div style={{ display: "grid", gap: 8 }}>
+          {editingApiTokenEntry ? (
+            <p style={{ margin: 0, fontSize: 12, color: "#fde68a" }}>
+              {editingApiTokenEntry.label ?? "API token"} を編集中
+            </p>
+          ) : null}
           <label style={{ display: "grid", gap: 4, fontSize: 12 }}>
             <span>API token名</span>
             <input
@@ -774,8 +821,19 @@ function PopupApp() {
               ...buttonStyle,
               background: "#a7f3d0",
             }}>
-            API tokenを保存
+            {editingApiTokenEntry ? "API tokenを更新" : "API tokenを保存"}
           </button>
+          {editingApiTokenEntry ? (
+            <button
+              type="button"
+              onClick={resetApiTokenForm}
+              style={{
+                ...buttonStyle,
+                background: "#cbd5e1",
+              }}>
+              編集をやめる
+            </button>
+          ) : null}
         </div>
         {apiTokenItems.length > 0 ? (
           <ul style={{ margin: "12px 0 0", padding: 0, display: "grid", gap: 8, listStyle: "none" }}>
@@ -784,7 +842,7 @@ function PopupApp() {
                 key={entryKey}
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "1fr auto auto",
+                  gridTemplateColumns: "1fr auto auto auto",
                   gap: 8,
                   alignItems: "center",
                   fontSize: 12
@@ -804,6 +862,19 @@ function PopupApp() {
                     </span>
                   ) : null}
                 </div>
+                <button
+                  type="button"
+                  onClick={() => handleEditApiToken(entryKey, entry)}
+                  disabled={!payload}
+                  style={{
+                    ...buttonStyle,
+                    padding: "7px 9px",
+                    background: payload ? "#bfdbfe" : "#475569",
+                    color: payload ? "#10131a" : "#cbd5e1",
+                    cursor: payload ? "pointer" : "not-allowed"
+                  }}>
+                  編集
+                </button>
                 <button
                   type="button"
                   onClick={() => {

@@ -10,7 +10,7 @@ API tokens are different. A reusable provider token or API key is useful to stor
 
 ## Decision
 
-Add `api-token` as a Secure Vault entry kind for manually created Vault items. These entries use a synthetic manual vault hostname and are copy-only from the popup. They are not associated with page field signatures and are not eligible for automatic learning or autofill.
+Add `api-token` as a Secure Vault entry kind for manually created Vault items. These entries use a synthetic manual vault hostname and are save/update/copy/delete capable from the popup, but copy-only with respect to browser pages. They are not associated with page field signatures and are not eligible for automatic learning or autofill.
 
 The encrypted Vault Entry value stores the API token payload, including token, service URL, account name, and notes. The entry label remains plaintext metadata for list display and must not contain the secret value.
 
@@ -33,4 +33,5 @@ Future secret item types, such as passwords, SSH keys, recovery codes, and secre
 - `token` and `api_token` web form fields remain blocked from automatic learning and autofill.
 - Sync payloads continue to reject `secureVaultKey` and contain only encrypted Vault Entry values.
 - The popup copy button writes only the decrypted API token value to the clipboard.
+- Updating an API Token Vault item modifies the existing entry instead of creating duplicate stale secrets.
 - The extension manifest declares `clipboardWrite` and does not declare clipboard read access for API Token Vault.

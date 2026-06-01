@@ -75,7 +75,7 @@ pnpm dev:extension
 - 支店番号、口座番号、カード番号、有効期限、カード名義は Secure Vault に学習し、popupからの手動実行時に入力できます
 - CVC/CVV/CID/セキュリティコードは将来利用のために保存せず、学習も自動入力もしません
 - 銀行/カード系の `field_learned_from_user` / `field_filled` / `field_corrected_by_user` イベントは、`previousValue` / `nextValue` を保存せず `values:redacted` だけ残します
-- API tokenは、ユーザーがpopupで明示作成したcopy-onlyのSecure Vault itemとしてのみ保存できます。token本体、サービスURL、アカウント、メモは暗号化値として保存し、`token` っぽいフォームフィールドからの自動学習・自動入力はしません
+- API tokenは、ユーザーがpopupで明示作成したcopy-onlyのSecure Vault itemとして保存・更新・コピー・削除できます。token本体、サービスURL、アカウント、メモは暗号化値として保存し、`token` っぽいフォームフィールドからの自動学習・自動入力はしません
 - PIN、パスワード、OTP、captcha、CSRF token、合言葉/秘密の質問系は学習も自動入力もしません
 - Secure Vault は通常の `fieldMemory` と分離し、ローカルでは AES-GCM で暗号化して保存します。Google同期では暗号化済みのVault dataだけをD1へ保存し、Vault KeyはWorkerにもD1にも送信しません。Vault Keyは `chrome.storage.session` にだけ保持し、過去版の `chrome.storage.local` に残ったキーは起動時にsessionへ移してlocal側を空にします
 - API tokenのコピーはpopupの明示操作だけで実行し、manifestでは `clipboardWrite` を要求します。clipboardからの読み取りはしません
