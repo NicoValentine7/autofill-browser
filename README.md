@@ -84,25 +84,34 @@ pnpm dev:extension
 
 #### Agent Vault for Codex / Claude Code
 
-Codex や Claude Code から開発用 API token を使う場合は、Chrome popupのコピーではなく、ローカルCLIの Agent Vault を使います。デフォルトの保存先は `.local/agent-vault.json` で、`.local/` はgit管理外です。token本体、service URL、account、notesは暗号化payloadに入り、`list` では名前・label・更新日時だけを出します。
+Codex や Claude Code から開発用 API token を使う場合は、Chrome popupのコピーではなく、Rust CLI の `agvt` を使います。デフォルトの保存先は `.local/agent-vault.json` で、`.local/` はgit管理外です。token本体、service URL、account、notesは暗号化payloadに入り、`agvt ls` ではvault名・item名・label・更新日時だけを出します。
 
 ```bash
-export AUTOFILL_AGENT_VAULT_PASSPHRASE="24文字以上のローカルpassphrase"
+export AGVT_PASSPHRASE="24文字以上のローカルpassphrase"
 
 export CLOUDFLARE_API_TOKEN="<cloudflare-api-token>"
-pnpm agent-vault put cloudflare
-pnpm agent-vault run cloudflare -- npx wrangler whoami
+pnpm agvt add cloudflare
+pnpm agvt run cloudflare -- npx wrangler whoami
 
-printf '%s' "$GITHUB_TOKEN" | pnpm agent-vault put github --value-stdin
-pnpm agent-vault list --json
-pnpm agent-vault read github
-pnpm agent-vault run github -- gh auth status
+GITHUB_TOKEN=agvt://github/token pnpm agvt run -- gh auth status
+pnpm agvt read agvt://cloudflare/token
+pnpm agvt inject .env.template
 ```
 
-`cloudflare` と `github` はプリセットです。`pnpm agent-vault presets` で確認できます。プリセットでは `put cloudflare` が `CLOUDFLARE_API_TOKEN` を自動で読み、`run cloudflare -- ...` が `CLOUDFLARE_API_TOKEN` を子プロセスへ注入します。カスタムtokenは `--value-stdin` か `--value-env TOKEN_ENV_NAME` を使い、tokenをコマンド引数に直接載せないでください。`run` は指定したtokenだけを子プロセスへ渡し、`AUTOFILL_AGENT_VAULT_PASSPHRASE` は子プロセス環境から外します。CLIの実動作確認は以下です。
+`cloudflare` と `github` はプリセットです。`pnpm agvt presets` で確認できます。`agvt://cloudflare/token` のような短縮secret referenceは `agvt://dev/cloudflare/token` として扱います。カスタムtokenは `--from-stdin` か `--from-env TOKEN_ENV_NAME` を使い、tokenをコマンド引数に直接載せないでください。`run` は指定したtokenだけを子プロセスへ渡し、`AGVT_PASSPHRASE` と `AUTOFILL_AGENT_VAULT_PASSPHRASE` は子プロセス環境から外します。
+
+単体コマンドとして使う場合は以下で入れます。
 
 ```bash
-pnpm verify:agent-vault
+cargo install --path crates/agvt
+agvt add cloudflare
+agvt run cloudflare -- npx wrangler whoami
+```
+
+CLIの実動作確認は以下です。
+
+```bash
+pnpm test:agvt
 ```
 
 #### 拡張IDを固定する

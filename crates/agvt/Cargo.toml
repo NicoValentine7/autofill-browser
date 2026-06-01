@@ -1,0 +1,16 @@
+[package]
+name = "agvt"
+version = "0.1.0"
+edition = "2021"
+description = "Agent Vault CLI for development secrets"
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+base64 = "0.22.1"
+ring = "0.17.14"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+
+[dev-dependencies]
+tempfile = "3.27.0"

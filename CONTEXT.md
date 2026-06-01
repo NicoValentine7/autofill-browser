@@ -53,12 +53,16 @@ A reusable bearer token, API key, or provider access token that a user explicitl
 _Avoid_: CSRF token, one-time token, OAuth access token captured from a page
 
 **Agent Vault**:
-A local encrypted vault file used by development agents such as Codex or Claude Code to retrieve explicitly saved **API Tokens** for terminal workflows. It is operated by the local `agent-vault` CLI and is separate from Chrome extension storage until an explicit broker or native messaging bridge is accepted.
+A local encrypted vault file used by development agents such as Codex or Claude Code to retrieve explicitly saved **API Tokens** for terminal workflows. It is operated by the local `agvt` CLI and is separate from Chrome extension storage until an explicit broker or native messaging bridge is accepted.
 _Avoid_: clipboard history, shell history, Chrome storage scrape, plaintext env file
 
 **Agent Vault Passphrase**:
-The local passphrase supplied to the `agent-vault` CLI through `AUTOFILL_AGENT_VAULT_PASSPHRASE`. It derives the local encryption key for the **Agent Vault** and must not be written to git, logs, or child process environments.
+The local passphrase supplied to the `agvt` CLI through `AGVT_PASSPHRASE` or the legacy `AUTOFILL_AGENT_VAULT_PASSPHRASE`. It derives the local encryption key for the **Agent Vault** and must not be written to git, logs, or child process environments.
 _Avoid_: API token, Vault Key, Google password
+
+**Agent Vault Secret Reference**:
+A 1Password-style pointer such as `agvt://dev/cloudflare/token` or the short default-vault form `agvt://cloudflare/token`. It may appear in environment variables or templates and is resolved by `agvt run`, `agvt read`, or `agvt inject`.
+_Avoid_: plaintext token, .env secret value, clipboard handoff
 
 **Secret Note**:
 A copy-only **Vault Entry** for arbitrary sensitive text that does not have a safer specialized type yet, such as recovery instructions or short private setup notes. It should be manually created, encrypted as a vault value, and never inferred from page fields.
@@ -90,6 +94,9 @@ This phrase is ambiguous and should not be used alone. Use **API Token** for an 
 
 **"Vault for Codex/Claude Code"**:
 This phrase is ambiguous because Chrome extension popup copy, Chrome extension **Secure Vault**, and terminal **Agent Vault** have different trust boundaries. Use **Agent Vault** when the goal is development-agent access from local commands.
+
+**"agvt://" without a vault segment**:
+The short form is intentionally the default `dev` vault. For production or account-separated values, write the full reference such as `agvt://prod/cloudflare/token`.
 
 ## Example Dialogue
 

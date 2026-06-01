@@ -2,6 +2,8 @@
 
 Status: Accepted
 
+Note: The security boundary in this ADR remains accepted. The primary CLI UX is superseded by ADR 0008, which introduces the Rust `agvt` command and `agvt://` secret references.
+
 ## Context
 
 The Chrome extension Secure Vault can now store explicit API Token items, but that popup-centered flow is not enough for Codex or Claude Code development workflows. Those agents operate through local terminal commands and need a controlled way to retrieve a token or inject it into a subprocess without scraping Chrome extension storage or relying on clipboard history.
