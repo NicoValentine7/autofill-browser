@@ -5,7 +5,12 @@ import { DEFAULT_AUTOFILL_SETTINGS, PROFILE_KEYS, createEmptyProfile, type Event
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import PopupApp from "../lib/popup-app"
-import { createSecureVaultRecoveryPackage, type SecureVaultKey } from "../lib/secure-vault"
+import {
+  MANUAL_SECURE_VAULT_HOSTNAME,
+  createSecureVaultRecoveryPackage,
+  parseSecureVaultApiTokenItemPayload,
+  type SecureVaultKey
+} from "../lib/secure-vault"
 import { getStorageSnapshot } from "../lib/storage"
 import { createChromeMock } from "./helpers/mock-chrome"
 
@@ -360,6 +365,47 @@ describe("PopupApp", () => {
       expect(mock.sessionStorageData.autofillSecureVaultKey).toEqual(vaultKey)
       expect(mock.storageData.autofillSecureVaultKey).toBeNull()
     })
+  })
+
+  it("saves manually entered API tokens into Secure Vault without storing plaintext locally", async () => {
+    const mock = createChromeMock({
+      autofillProfile: {
+        ...createEmptyProfile(),
+        fullName: "山田 太郎"
+      }
+    })
+    ;(globalThis as { chrome: typeof chrome }).chrome = mock.chromeMock as unknown as typeof chrome
+
+    render(createElement(PopupApp))
+
+    const user = userEvent.setup()
+    await user.type(await screen.findByLabelText("API token名"), "GitHub production")
+    await user.type(screen.getByLabelText("サービスURL"), "https://api.github.com")
+    await user.type(screen.getByLabelText("アカウント"), "deploy-bot")
+    await user.type(screen.getByLabelText("API token"), "ghp_test_secret")
+    await user.type(screen.getByLabelText("メモ"), "repo deploy scope")
+    await user.click(screen.getByRole("button", { name: "API tokenを保存" }))
+
+    await waitFor(async () => {
+      const snapshot = await getStorageSnapshot()
+      const [entry] = Object.values(snapshot.secureVault.entries).filter((candidate) => candidate.kind === "api-token")
+      expect(entry).toMatchObject({
+        hostname: MANUAL_SECURE_VAULT_HOSTNAME,
+        label: "GitHub production"
+      })
+      const [plaintext] = Object.values(snapshot.secureVaultValues)
+      expect(parseSecureVaultApiTokenItemPayload(plaintext)).toMatchObject({
+        token: "ghp_test_secret",
+        serviceUrl: "https://api.github.com",
+        accountName: "deploy-bot",
+        notes: "repo deploy scope"
+      })
+    })
+
+    expect(JSON.stringify(mock.storageData.autofillSecureVault)).not.toContain("ghp_test_secret")
+    expect(JSON.stringify(mock.storageData.autofillSecureVault)).not.toContain("https://api.github.com")
+    expect(JSON.stringify(mock.storageData.autofillSecureVault)).not.toContain("deploy-bot")
+    expect(mock.sessionStorageData.autofillSecureVaultKey).toBeTruthy()
   })
 
   it("does not treat a leftover local vault key as usable for a different recovery package", async () => {

@@ -48,6 +48,14 @@ _Avoid_: confirmation code, verification code, OTP
 A reusable authenticator setup secret, usually obtained from a QR code or manual setup key, that can generate short-lived authentication codes. It belongs in the **Secure Vault**; the generated code is not itself the stored secret.
 _Avoid_: one-time code, SMS code, email code
 
+**API Token**:
+A reusable bearer token, API key, or provider access token that a user explicitly saves as a copy-only **Vault Entry**. It belongs in the **Secure Vault** only when the user manually creates it; token-looking form fields are not learned or autofilled automatically.
+_Avoid_: CSRF token, one-time token, OAuth access token captured from a page
+
+**Secret Note**:
+A copy-only **Vault Entry** for arbitrary sensitive text that does not have a safer specialized type yet, such as recovery instructions or short private setup notes. It should be manually created, encrypted as a vault value, and never inferred from page fields.
+_Avoid_: field memory, clipboard history, raw note sync
+
 **One-Time Verification Code**:
 A short-lived code sent or shown for a single challenge, such as an SMS code, email code, or bank challenge code. It is not reusable and should not be learned as a **Vault Entry**.
 _Avoid_: TOTP secret, card security code, saved code
@@ -68,6 +76,9 @@ This phrase is ambiguous around sensitive values. Use **Local Vault Transfer** w
 
 **"Vault Backup"**:
 This phrase is ambiguous because it can imply the cloud can read or restore the vault by itself. Use **Vault Recovery Package** when the cloud stores only an encrypted wrapper, and **Recovery Phrase** when referring to the user-held secret needed to unwrap it.
+
+**"Token"**:
+This phrase is ambiguous and should not be used alone. Use **API Token** for an explicitly saved reusable provider credential, **TOTP Secret** for an authenticator setup seed, or **One-Time Verification Code** for a challenge response. Anti-CSRF and page-generated tokens must not become **Vault Entries**.
 
 ## Example Dialogue
 
@@ -94,3 +105,7 @@ Domain expert: "No. Each System Account has its own Vault Key because each Syste
 Dev: "Can the cloud restore my Secure Vault by itself?"
 
 Domain expert: "No. The cloud can return the Vault Recovery Package, but the user must enter the Recovery Phrase locally to recover the Vault Key."
+
+Dev: "Should we learn this `api_token` field?"
+
+Domain expert: "No. Token-looking form fields stay blocked. If the user wants to keep a reusable API Token, they create a copy-only Secure Vault item explicitly."

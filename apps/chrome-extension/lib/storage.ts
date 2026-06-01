@@ -15,6 +15,7 @@ import {
 import { sendCloudLogSyncMessage } from "./messages"
 import {
   createSecureVaultKey,
+  deleteSecureVaultValue,
   decryptSecureVaultValues,
   ensureSecureVaultKeyCheck,
   normalizeSecureVaultRecoveryPackage,
@@ -24,6 +25,7 @@ import {
   type SecureVaultKey,
   type SecureVaultRecoveryPackage,
   type SecureVaultState,
+  type SecureVaultValueDelete,
   type SecureVaultValueUpdate
 } from "./secure-vault"
 
@@ -96,6 +98,7 @@ type StorageUpdate = {
   fieldMemoryUpdates?: FieldMemoryEntry[]
   fieldMemoryDeletes?: Array<{ hostname: string; fieldSignature: string }>
   secureVaultUpdates?: SecureVaultValueUpdate[]
+  secureVaultDeletes?: SecureVaultValueDelete[]
   secureVault?: SecureVaultState
   secureVaultKey?: SecureVaultKey | null
   secureVaultRecovery?: SecureVaultRecoveryPackage | null
@@ -319,6 +322,8 @@ export const commitStorageChanges = async (update: StorageUpdate): Promise<Stora
   const hasSecureVaultUpdate = Object.prototype.hasOwnProperty.call(update, "secureVault")
   const hasSecureVaultKeyUpdate = Object.prototype.hasOwnProperty.call(update, "secureVaultKey")
   const hasSecureVaultRecoveryUpdate = Object.prototype.hasOwnProperty.call(update, "secureVaultRecovery")
+  const hasSecureVaultValueUpdates = Boolean(update.secureVaultUpdates?.length)
+  const hasSecureVaultDeletes = Boolean(update.secureVaultDeletes?.length)
   const next: StorageSnapshot = {
     profile: update.profile ? normalizeProfile(update.profile) : current.profile,
     settings: update.settings ? normalizeSettings({ ...current.settings, ...update.settings }) : current.settings,
@@ -348,21 +353,27 @@ export const commitStorageChanges = async (update: StorageUpdate): Promise<Stora
     }
   }
 
-  if (update.secureVaultUpdates && update.secureVaultUpdates.length > 0) {
+  if (update.secureVaultDeletes) {
+    for (const secureVaultDelete of update.secureVaultDeletes) {
+      next.secureVault = deleteSecureVaultValue(next.secureVault, secureVaultDelete)
+    }
+  }
+
+  if (hasSecureVaultValueUpdates) {
     next.secureVaultKey = next.secureVaultKey ?? createSecureVaultKey()
-    for (const secureVaultUpdate of update.secureVaultUpdates) {
+    for (const secureVaultUpdate of update.secureVaultUpdates ?? []) {
       next.secureVault = await upsertSecureVaultValue(next.secureVault, next.secureVaultKey, secureVaultUpdate)
     }
   }
 
   if (
     next.secureVaultKey &&
-    (hasSecureVaultUpdate || hasSecureVaultKeyUpdate || (update.secureVaultUpdates && update.secureVaultUpdates.length > 0))
+    (hasSecureVaultUpdate || hasSecureVaultKeyUpdate || hasSecureVaultValueUpdates)
   ) {
     next.secureVault = await ensureSecureVaultKeyCheck(next.secureVault, next.secureVaultKey)
   }
 
-  if (hasSecureVaultUpdate || hasSecureVaultKeyUpdate || (update.secureVaultUpdates && update.secureVaultUpdates.length > 0)) {
+  if (hasSecureVaultUpdate || hasSecureVaultKeyUpdate || hasSecureVaultValueUpdates || hasSecureVaultDeletes) {
     next.secureVaultValues = await decryptSecureVaultValues(next.secureVault, next.secureVaultKey)
   }
 
@@ -373,7 +384,7 @@ export const commitStorageChanges = async (update: StorageUpdate): Promise<Stora
     next.eventLog = sortAndTrimEvents([...normalizedEventEntries, ...current.eventLog])
   }
 
-  if (hasSecureVaultKeyUpdate || (update.secureVaultUpdates && update.secureVaultUpdates.length > 0)) {
+  if (hasSecureVaultKeyUpdate || hasSecureVaultValueUpdates) {
     await saveSessionSecureVaultKey(next.secureVaultKey)
   }
 
