@@ -64,6 +64,9 @@ const FIELD_SELECTOR = "input, textarea, select"
 const USER_EDIT_AUTOFILL_SUPPRESSION_MS = 1500
 const EXTENSION_CONTEXT_INVALIDATED_PATTERN = /Extension context invalidated/i
 
+const isFieldElement = (target: EventTarget | null): target is FieldElement =>
+  target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement
+
 const hasLearnedFieldValues = (fieldMemory: StorageSnapshot["fieldMemory"]) =>
   Object.values(fieldMemory).some((entry) => entry.lastUserValue.trim().length > 0)
 
@@ -216,6 +219,46 @@ export const createAutofillController = ({
     }
   }
 
+  const markUserEditFromEvent = (event: Event) => {
+    if (isFieldElement(event.target)) {
+      markUserEdit(event.target, event)
+    }
+  }
+
+  const markCompositionStartFromEvent = (event: Event) => {
+    if (!isFieldElement(event.target) || internalAutofillFields.has(event.target)) {
+      return
+    }
+
+    composingFields.add(event.target)
+    lastUserEditAt.set(event.target, getNow())
+  }
+
+  const markCompositionEndFromEvent = (event: Event) => {
+    if (!isFieldElement(event.target) || internalAutofillFields.has(event.target)) {
+      return
+    }
+
+    composingFields.delete(event.target)
+    lastUserEditAt.set(event.target, getNow())
+  }
+
+  const installGlobalUserInteractionTracking = () => {
+    documentObject.addEventListener("focusin", markUserEditFromEvent, true)
+    documentObject.addEventListener("compositionstart", markCompositionStartFromEvent, true)
+    documentObject.addEventListener("compositionend", markCompositionEndFromEvent, true)
+    documentObject.addEventListener("beforeinput", markUserEditFromEvent, true)
+    documentObject.addEventListener("input", markUserEditFromEvent, true)
+  }
+
+  const removeGlobalUserInteractionTracking = () => {
+    documentObject.removeEventListener("focusin", markUserEditFromEvent, true)
+    documentObject.removeEventListener("compositionstart", markCompositionStartFromEvent, true)
+    documentObject.removeEventListener("compositionend", markCompositionEndFromEvent, true)
+    documentObject.removeEventListener("beforeinput", markUserEditFromEvent, true)
+    documentObject.removeEventListener("input", markUserEditFromEvent, true)
+  }
+
   const isUserEditingField = (field: FieldElement) => {
     if (composingFields.has(field)) {
       return true
@@ -224,6 +267,11 @@ export const createAutofillController = ({
     const lastEditAt = lastUserEditAt.get(field)
     return lastEditAt !== undefined && getNow() - lastEditAt < USER_EDIT_AUTOFILL_SUPPRESSION_MS
   }
+
+  const isFocusedField = (field: FieldElement) => documentObject.activeElement === field
+
+  const shouldSkipAutomaticAutofill = (field: FieldElement, source: AutofillEventSource) =>
+    source !== "popup" && (isFocusedField(field) || isUserEditingField(field))
 
   const attachUserInteractionTracking = (field: FieldElement) => {
     if (userInteractionTrackedFields.has(field)) {
@@ -651,7 +699,7 @@ export const createAutofillController = ({
       }
 
       const previousValue = getFieldCurrentValue(candidate.field)
-      if (previousValue.trim() || isUserEditingField(candidate.field)) {
+      if (previousValue.trim() || shouldSkipAutomaticAutofill(candidate.field, source)) {
         continue
       }
 
@@ -815,6 +863,7 @@ export const createAutofillController = ({
     }
 
     initialized = true
+    installGlobalUserInteractionTracking()
     try {
       chromeApi.runtime.onMessage.addListener((message: ExtensionMessage) => {
         void handleMessage(message)
@@ -861,6 +910,7 @@ export const createAutofillController = ({
       windowObject.clearTimeout(navigationTimer)
       observer?.disconnect()
       observer = null
+      removeGlobalUserInteractionTracking()
       initialized = false
     }
   }

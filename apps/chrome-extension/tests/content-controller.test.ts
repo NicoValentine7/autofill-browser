@@ -249,6 +249,58 @@ describe("content-controller", () => {
     expect(field.value).toBe("")
   })
 
+  it("does not autofill the focused field during automatic runs", async () => {
+    const { chromeMock } = createChromeMock({
+      autofillProfile: profile
+    })
+    ;(globalThis as { chrome: typeof chrome }).chrome = chromeMock as unknown as typeof chrome
+    document.body.innerHTML = `
+      <input id="given-name" name="givenName" />
+      <input id="family-name" name="familyName" />
+    `
+
+    const field = document.getElementById("given-name") as HTMLInputElement
+    field.focus()
+
+    const controller = createController({
+      chromeApi: chromeMock as unknown as typeof chrome,
+      debounceMs: 10
+    })
+
+    await controller.initialize()
+    await vi.runAllTimersAsync()
+    await flush()
+
+    expect(field.value).toBe("")
+    expect((document.getElementById("family-name") as HTMLInputElement).value).toBe("山田")
+  })
+
+  it("tracks IME composition before field-specific listeners are attached", async () => {
+    const { chromeMock } = createChromeMock({
+      autofillProfile: profile
+    })
+    ;(globalThis as { chrome: typeof chrome }).chrome = chromeMock as unknown as typeof chrome
+    document.body.innerHTML = ""
+
+    const controller = createController({
+      chromeApi: chromeMock as unknown as typeof chrome,
+      debounceMs: 10
+    })
+
+    await controller.initialize()
+    await vi.runAllTimersAsync()
+    await flush()
+
+    document.body.innerHTML = `<input id="given-name" name="givenName" />`
+    const field = document.getElementById("given-name") as HTMLInputElement
+    field.focus()
+    field.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true, data: "た" }))
+
+    await controller.runAutofill("mutation-observer")
+
+    expect(field.value).toBe("")
+  })
+
   it("does not fill or log field_filled for dangerous-only pages", async () => {
     const { chromeMock } = createChromeMock({
       autofillProfile: profile
