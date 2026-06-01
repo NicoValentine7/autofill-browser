@@ -52,6 +52,25 @@ describe("autofill-core", () => {
     expect(matchProfileKey(buildFieldDescriptor(givenField))).toBe("givenName")
   })
 
+  it("uses aria-labelledby and nearby text for app-style Japanese name fields", () => {
+    document.body.innerHTML = `
+      <div>
+        <span id="apple-given-label">名</span>
+        <input id="apple-given" aria-labelledby="apple-given-label" />
+      </div>
+      <div>
+        <span>姓</span>
+        <input id="apple-family" />
+      </div>
+    `
+
+    const givenField = document.getElementById("apple-given") as HTMLInputElement
+    const familyField = document.getElementById("apple-family") as HTMLInputElement
+
+    expect(matchProfileKey(buildFieldDescriptor(givenField))).toBe("givenName")
+    expect(matchProfileKey(buildFieldDescriptor(familyField))).toBe("familyName")
+  })
+
   it("matches city and address line 2 independently", () => {
     document.body.innerHTML = `
       <label for="city">市町村</label>
@@ -80,6 +99,17 @@ describe("autofill-core", () => {
 
     expect(matchProfileKey(buildFieldDescriptor(usernameField))).toBeNull()
     expect(matchProfileKey(buildFieldDescriptor(cardholderField))).toBeNull()
+  })
+
+  it("does not match phone extension fields as phone numbers", () => {
+    document.body.innerHTML = `
+      <label for="phone-extension">内線</label>
+      <input id="phone-extension" name="phoneNumberExtension" />
+    `
+
+    const field = document.getElementById("phone-extension") as HTMLInputElement
+
+    expect(matchProfileKey(buildFieldDescriptor(field))).toBeNull()
   })
 
   it("builds stable field signatures", () => {

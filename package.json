@@ -6,6 +6,7 @@
   "scripts": {
     "dev:extension": "pnpm --filter chrome-extension dev",
     "build:extension": "pnpm --filter chrome-extension build",
+    "build:extension:unpacked": "pnpm --filter chrome-extension build:unpacked && node scripts/check-extension-unpacked-build.mjs",
     "package:extension": "node scripts/package-extension-zip.mjs",
     "package:webstore": "node scripts/package-webstore-zip.mjs",
     "assets:webstore": "node scripts/generate-webstore-assets.mjs",

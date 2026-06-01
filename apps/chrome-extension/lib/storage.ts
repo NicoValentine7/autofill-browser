@@ -259,17 +259,41 @@ const sortAndTrimEvents = (entries: EventLogEntry[]) =>
     .sort((left, right) => right.timestamp.localeCompare(left.timestamp))
     .slice(0, EVENT_LOG_LIMIT)
 
+export const createUnavailableStorageSnapshot = (): StorageSnapshot => ({
+  profile: createEmptyProfile(),
+  settings: {
+    ...DEFAULT_AUTOFILL_SETTINGS,
+    enabled: false,
+    observeDynamicForms: false
+  },
+  domainPolicies: {},
+  fieldMemory: {},
+  secureVault: normalizeSecureVaultState(),
+  secureVaultValues: {},
+  eventLog: [],
+  accountSync: normalizeAccountSyncState()
+})
+
 const getSessionStorageArea = () => chrome.storage.session
 
 const getSessionSecureVaultKey = async () => {
-  const stored = await getSessionStorageArea().get(STORAGE_KEYS.secureVaultKey)
-  return normalizeSecureVaultKey(stored[STORAGE_KEYS.secureVaultKey] as Partial<SecureVaultKey> | undefined)
+  try {
+    const stored = await getSessionStorageArea().get(STORAGE_KEYS.secureVaultKey)
+    return normalizeSecureVaultKey(stored[STORAGE_KEYS.secureVaultKey] as Partial<SecureVaultKey> | undefined)
+  } catch (_error) {
+    return undefined
+  }
 }
 
 const saveSessionSecureVaultKey = async (secureVaultKey?: SecureVaultKey | null) => {
-  await getSessionStorageArea().set({
-    [STORAGE_KEYS.secureVaultKey]: secureVaultKey ?? null
-  })
+  try {
+    await getSessionStorageArea().set({
+      [STORAGE_KEYS.secureVaultKey]: secureVaultKey ?? null
+    })
+    return true
+  } catch (_error) {
+    return false
+  }
 }
 
 const clearPersistedSecureVaultKey = async () => {
@@ -290,8 +314,9 @@ export const getStorageSnapshot = async (): Promise<StorageSnapshot> => {
   let secureVaultKey = await getSessionSecureVaultKey()
   if (!secureVaultKey && persistedSecureVaultKey) {
     secureVaultKey = persistedSecureVaultKey
-    await saveSessionSecureVaultKey(secureVaultKey)
-    await clearPersistedSecureVaultKey()
+    if (await saveSessionSecureVaultKey(secureVaultKey)) {
+      await clearPersistedSecureVaultKey()
+    }
   }
   const secureVaultRecovery = normalizeSecureVaultRecoveryPackage(
     stored[STORAGE_KEYS.secureVaultRecovery] as Partial<SecureVaultRecoveryPackage> | undefined
@@ -373,9 +398,8 @@ export const commitStorageChanges = async (update: StorageUpdate): Promise<Stora
     next.eventLog = sortAndTrimEvents([...normalizedEventEntries, ...current.eventLog])
   }
 
-  if (hasSecureVaultKeyUpdate || (update.secureVaultUpdates && update.secureVaultUpdates.length > 0)) {
-    await saveSessionSecureVaultKey(next.secureVaultKey)
-  }
+  const shouldStoreSecureVaultKeyInSession = hasSecureVaultKeyUpdate || (update.secureVaultUpdates && update.secureVaultUpdates.length > 0)
+  const storedSecureVaultKeyInSession = shouldStoreSecureVaultKeyInSession ? await saveSessionSecureVaultKey(next.secureVaultKey) : false
 
   await chrome.storage.local.set({
     [STORAGE_KEYS.profile]: next.profile,
@@ -383,7 +407,7 @@ export const commitStorageChanges = async (update: StorageUpdate): Promise<Stora
     [STORAGE_KEYS.domainPolicies]: next.domainPolicies,
     [STORAGE_KEYS.fieldMemory]: next.fieldMemory,
     [STORAGE_KEYS.secureVault]: next.secureVault,
-    [STORAGE_KEYS.secureVaultKey]: null,
+    [STORAGE_KEYS.secureVaultKey]: shouldStoreSecureVaultKeyInSession && !storedSecureVaultKeyInSession ? (next.secureVaultKey ?? null) : null,
     [STORAGE_KEYS.secureVaultRecovery]: next.secureVaultRecovery ?? null,
     [STORAGE_KEYS.eventLog]: next.eventLog,
     [STORAGE_KEYS.googleAuthUser]: next.googleAuthUser ?? null,
