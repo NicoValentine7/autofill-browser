@@ -82,6 +82,25 @@ pnpm dev:extension
 - 別PCでは、Googleログイン後にSecure Vaultの回復フレーズを入力すると、D1上のVault Recovery PackageからVault Keyをこの端末へ復元できます。回復フレーズは拡張側で高エントロピー生成し、PBKDF2-SHA256 600k iterations + AES-GCM AADでVault Keyを包み、保存・送信しません
 - Secure Vaultには `vaultId`, `activeKeyId`, encrypted key-check canary を持たせ、復元時はVault Recovery Packageの `vaultId` とcanary検証に通ったVault Keyだけを端末sessionへ保存します
 
+#### Agent Vault for Codex / Claude Code
+
+Codex や Claude Code から開発用 API token を使う場合は、Chrome popupのコピーではなく、ローカルCLIの Agent Vault を使います。デフォルトの保存先は `.local/agent-vault.json` で、`.local/` はgit管理外です。token本体、service URL、account、notesは暗号化payloadに入り、`list` では名前・label・更新日時だけを出します。
+
+```bash
+export AUTOFILL_AGENT_VAULT_PASSPHRASE="24文字以上のローカルpassphrase"
+
+printf '%s' "$GITHUB_TOKEN" | pnpm agent-vault put github --value-stdin --label "GitHub"
+pnpm agent-vault list --json
+pnpm agent-vault read github
+pnpm agent-vault run --env GITHUB_TOKEN=github -- gh auth status
+```
+
+`put` は `--value-stdin` か `--value-env TOKEN_ENV_NAME` を使い、tokenをコマンド引数に直接載せないでください。`run --env` は指定したtokenだけを子プロセスへ渡し、`AUTOFILL_AGENT_VAULT_PASSPHRASE` は子プロセス環境から外します。CLIの実動作確認は以下です。
+
+```bash
+pnpm verify:agent-vault
+```
+
 #### 拡張IDを固定する
 
 manifest `key` の公開鍵は `apps/chrome-extension/package.json` に入れてあるため、別PCでも clone して build するだけで同じ拡張IDになります。これは「unpackedで読み込むローカル版」のための固定IDです。秘密鍵のコピーは不要です。

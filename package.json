@@ -16,6 +16,8 @@
     "typecheck:log-worker": "pnpm --filter chrome-extension exec tsc --noEmit -p ../log-worker/tsconfig.json",
     "test:log-worker": "pnpm --filter chrome-extension exec vitest run --root ../log-worker tests/index.test.ts",
     "verify:google-sync-e2e": "node scripts/verify-google-sync-e2e.mjs",
+    "agent-vault": "node scripts/agent-vault.mjs",
+    "verify:agent-vault": "node scripts/verify-agent-vault-cli.mjs",
     "setup:extension-key": "node scripts/setup-extension-key.mjs",
     "set:google-oauth-client": "node scripts/set-google-oauth-client-id.mjs",
     "sync:android-rules": "node scripts/sync-android-rules.mjs",
