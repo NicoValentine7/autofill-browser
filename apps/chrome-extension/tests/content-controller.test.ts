@@ -126,6 +126,85 @@ describe("content-controller", () => {
     expect(snapshot.eventLog.some((entry: { type: string }) => entry.type === "field_filled")).toBe(true)
   })
 
+  it("autofills normal fields when session storage is unavailable to content scripts", async () => {
+    const { chromeMock } = createChromeMock({
+      autofillProfile: profile
+    })
+    chromeMock.storage.session.get = async () => {
+      throw new Error("Access to storage is not allowed from this context.")
+    }
+    chromeMock.storage.session.set = async () => {
+      throw new Error("Access to storage is not allowed from this context.")
+    }
+    ;(globalThis as { chrome: typeof chrome }).chrome = chromeMock as unknown as typeof chrome
+    document.body.innerHTML = `<input id="email" name="email" />`
+
+    const controller = createController({
+      chromeApi: chromeMock as unknown as typeof chrome,
+      debounceMs: 10
+    })
+
+    await controller.initialize()
+    await vi.runAllTimersAsync()
+    await flush()
+
+    expect((document.getElementById("email") as HTMLInputElement).value).toBe("taro@example.com")
+  })
+
+  it("silently deactivates when Chrome invalidates the content script context before storage reads", async () => {
+    const { chromeMock } = createChromeMock({
+      autofillProfile: profile
+    })
+    chromeMock.storage.local.get = async () => {
+      throw new Error("Extension context invalidated.")
+    }
+    ;(globalThis as { chrome: typeof chrome }).chrome = chromeMock as unknown as typeof chrome
+    document.body.innerHTML = `<input id="email" name="email" />`
+
+    const controller = createController({
+      chromeApi: chromeMock as unknown as typeof chrome,
+      debounceMs: 10
+    })
+
+    await expect(controller.initialize()).resolves.toBeUndefined()
+    await vi.runAllTimersAsync()
+    await flush()
+
+    expect((document.getElementById("email") as HTMLInputElement).value).toBe("")
+    expect(controller.shouldAutofill()).toBe(false)
+  })
+
+  it("silently deactivates when Chrome invalidates the content script context before deferred writes", async () => {
+    const { chromeMock } = createChromeMock({
+      autofillProfile: profile
+    })
+    ;(globalThis as { chrome: typeof chrome }).chrome = chromeMock as unknown as typeof chrome
+    document.body.innerHTML = `<input id="email" name="email" />`
+
+    const controller = createController({
+      chromeApi: chromeMock as unknown as typeof chrome,
+      debounceMs: 10
+    })
+
+    await controller.initialize()
+    await vi.runAllTimersAsync()
+    await flush()
+
+    const field = document.getElementById("email") as HTMLInputElement
+    expect(field.value).toBe("taro@example.com")
+
+    chromeMock.storage.local.get = async () => {
+      throw new Error("Extension context invalidated.")
+    }
+    field.value = "edited@example.com"
+    field.dispatchEvent(new Event("input", { bubbles: true }))
+
+    await vi.runAllTimersAsync()
+    await flush()
+
+    expect(controller.shouldAutofill()).toBe(false)
+  })
+
   it("does not overwrite non-empty values", async () => {
     const { chromeMock } = createChromeMock({
       autofillProfile: profile
@@ -143,6 +222,83 @@ describe("content-controller", () => {
     await flush()
 
     expect((document.getElementById("email") as HTMLInputElement).value).toBe("already@example.com")
+  })
+
+  it("does not autofill a field while Japanese IME composition is active", async () => {
+    const { chromeMock } = createChromeMock({
+      autofillProfile: profile
+    })
+    ;(globalThis as { chrome: typeof chrome }).chrome = chromeMock as unknown as typeof chrome
+    document.body.innerHTML = `<input id="given-name" name="givenName" />`
+
+    const controller = createController({
+      chromeApi: chromeMock as unknown as typeof chrome,
+      debounceMs: 10
+    })
+
+    await controller.initialize()
+    await vi.runAllTimersAsync()
+    await flush()
+
+    const field = document.getElementById("given-name") as HTMLInputElement
+    field.value = ""
+    field.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true, data: "た" }))
+
+    await controller.runAutofill("mutation-observer")
+
+    expect(field.value).toBe("")
+  })
+
+  it("does not autofill the focused field during automatic runs", async () => {
+    const { chromeMock } = createChromeMock({
+      autofillProfile: profile
+    })
+    ;(globalThis as { chrome: typeof chrome }).chrome = chromeMock as unknown as typeof chrome
+    document.body.innerHTML = `
+      <input id="given-name" name="givenName" />
+      <input id="family-name" name="familyName" />
+    `
+
+    const field = document.getElementById("given-name") as HTMLInputElement
+    field.focus()
+
+    const controller = createController({
+      chromeApi: chromeMock as unknown as typeof chrome,
+      debounceMs: 10
+    })
+
+    await controller.initialize()
+    await vi.runAllTimersAsync()
+    await flush()
+
+    expect(field.value).toBe("")
+    expect((document.getElementById("family-name") as HTMLInputElement).value).toBe("山田")
+  })
+
+  it("tracks IME composition before field-specific listeners are attached", async () => {
+    const { chromeMock } = createChromeMock({
+      autofillProfile: profile
+    })
+    ;(globalThis as { chrome: typeof chrome }).chrome = chromeMock as unknown as typeof chrome
+    document.body.innerHTML = ""
+
+    const controller = createController({
+      chromeApi: chromeMock as unknown as typeof chrome,
+      debounceMs: 10
+    })
+
+    await controller.initialize()
+    await vi.runAllTimersAsync()
+    await flush()
+
+    document.body.innerHTML = `<input id="given-name" name="givenName" />`
+    const field = document.getElementById("given-name") as HTMLInputElement
+    field.focus()
+    field.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true, data: "た" }))
+
+    await controller.runAutofill("mutation-observer")
+
+    expect(field.value).toBe("")
   })
 
   it("does not fill or log field_filled for dangerous-only pages", async () => {

@@ -106,7 +106,8 @@
     },
     {
       "key": "phone",
-      "includes": ["phone", "tel", "mobile", "telephone", "phone number", "tel-national", "電話", "携帯", "連絡先"]
+      "includes": ["phone", "tel", "mobile", "telephone", "phone number", "tel-national", "電話", "携帯", "連絡先"],
+      "excludes": ["extension", "ext", "内線"]
     },
     {
       "key": "organization",

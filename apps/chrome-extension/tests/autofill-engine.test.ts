@@ -124,6 +124,32 @@ describe("autofill-engine", () => {
     })
   })
 
+  it("fills Apple-style identity fields without filling phone extensions", () => {
+    document.body.innerHTML = `
+      <div>
+        <span>名</span>
+        <input id="apple-given" />
+      </div>
+      <div>
+        <span>姓</span>
+        <input id="apple-family" />
+      </div>
+      <label for="apple-phone">電話番号</label>
+      <input id="apple-phone" name="phoneNumber" />
+      <label for="apple-phone-ext">内線</label>
+      <input id="apple-phone-ext" name="phoneNumberExtension" />
+    `
+
+    const values = valueById(createSnapshot())
+
+    expect(values).toMatchObject({
+      "apple-given": "花子",
+      "apple-family": "山田",
+      "apple-phone": "08000001111"
+    })
+    expect(values).not.toHaveProperty("apple-phone-ext")
+  })
+
   it("applies remote blocked identity tokens", () => {
     document.body.innerHTML = `
       <label for="customer-secret">Customer Secret</label>

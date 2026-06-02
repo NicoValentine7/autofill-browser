@@ -21,7 +21,13 @@ import {
 } from "./field-security"
 import type { ExtensionMessage } from "./messages"
 import { validateSecureVaultKey, type SecureVaultValueUpdate } from "./secure-vault"
-import { commitStorageChanges, getStorageSnapshot, type NewEventLogEntry, type StorageSnapshot } from "./storage"
+import {
+  commitStorageChanges,
+  createUnavailableStorageSnapshot,
+  getStorageSnapshot,
+  type NewEventLogEntry,
+  type StorageSnapshot
+} from "./storage"
 
 type CorrectionState = {
   field: FieldElement
@@ -55,6 +61,11 @@ const createRunId = () =>
 
 const MAX_LEARNED_VALUE_LENGTH = 300
 const FIELD_SELECTOR = "input, textarea, select"
+const USER_EDIT_AUTOFILL_SUPPRESSION_MS = 1500
+const EXTENSION_CONTEXT_INVALIDATED_PATTERN = /Extension context invalidated/i
+
+const isFieldElement = (target: EventTarget | null): target is FieldElement =>
+  target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement
 
 const hasLearnedFieldValues = (fieldMemory: StorageSnapshot["fieldMemory"]) =>
   Object.values(fieldMemory).some((entry) => entry.lastUserValue.trim().length > 0)
@@ -156,11 +167,141 @@ export const createAutofillController = ({
   const autofillState = new WeakMap<FieldElement, CorrectionState>()
   const learningState = new WeakMap<FieldElement, LearningState>()
   const internalAutofillFields = new WeakSet<FieldElement>()
+  const userInteractionTrackedFields = new WeakSet<FieldElement>()
+  const composingFields = new WeakSet<FieldElement>()
+  const lastUserEditAt = new WeakMap<FieldElement, number>()
   const processedRunKeys = new Set<string>()
   let learnedInputPersistQueue: Promise<void> = Promise.resolve()
+  let extensionContextAvailable = true
+
+  const getNow = () => windowObject.performance?.now?.() ?? Date.now()
+
+  const isExtensionContextInvalidatedError = (error: unknown) =>
+    error instanceof Error && EXTENSION_CONTEXT_INVALIDATED_PATTERN.test(error.message)
+
+  const deactivateInvalidatedExtensionContext = () => {
+    extensionContextAvailable = false
+    windowObject.clearTimeout(mutationTimer)
+    windowObject.clearTimeout(navigationTimer)
+    observer?.disconnect()
+    observer = null
+    snapshot = createUnavailableStorageSnapshot()
+  }
+
+  const ignoreInvalidatedExtensionContext = async <Result>(operation: () => Promise<Result>) => {
+    if (!extensionContextAvailable) {
+      return undefined
+    }
+
+    try {
+      return await operation()
+    } catch (error) {
+      if (isExtensionContextInvalidatedError(error)) {
+        deactivateInvalidatedExtensionContext()
+        return undefined
+      }
+
+      throw error
+    }
+  }
+
+  const isComposingEvent = (event: Event | undefined) =>
+    Boolean(event && "isComposing" in event && (event as InputEvent).isComposing)
+
+  const markUserEdit = (field: FieldElement, event?: Event) => {
+    if (internalAutofillFields.has(field)) {
+      return
+    }
+
+    lastUserEditAt.set(field, getNow())
+    if (isComposingEvent(event)) {
+      composingFields.add(field)
+    }
+  }
+
+  const markUserEditFromEvent = (event: Event) => {
+    if (isFieldElement(event.target)) {
+      markUserEdit(event.target, event)
+    }
+  }
+
+  const markCompositionStartFromEvent = (event: Event) => {
+    if (!isFieldElement(event.target) || internalAutofillFields.has(event.target)) {
+      return
+    }
+
+    composingFields.add(event.target)
+    lastUserEditAt.set(event.target, getNow())
+  }
+
+  const markCompositionEndFromEvent = (event: Event) => {
+    if (!isFieldElement(event.target) || internalAutofillFields.has(event.target)) {
+      return
+    }
+
+    composingFields.delete(event.target)
+    lastUserEditAt.set(event.target, getNow())
+  }
+
+  const installGlobalUserInteractionTracking = () => {
+    documentObject.addEventListener("focusin", markUserEditFromEvent, true)
+    documentObject.addEventListener("compositionstart", markCompositionStartFromEvent, true)
+    documentObject.addEventListener("compositionend", markCompositionEndFromEvent, true)
+    documentObject.addEventListener("beforeinput", markUserEditFromEvent, true)
+    documentObject.addEventListener("input", markUserEditFromEvent, true)
+  }
+
+  const removeGlobalUserInteractionTracking = () => {
+    documentObject.removeEventListener("focusin", markUserEditFromEvent, true)
+    documentObject.removeEventListener("compositionstart", markCompositionStartFromEvent, true)
+    documentObject.removeEventListener("compositionend", markCompositionEndFromEvent, true)
+    documentObject.removeEventListener("beforeinput", markUserEditFromEvent, true)
+    documentObject.removeEventListener("input", markUserEditFromEvent, true)
+  }
+
+  const isUserEditingField = (field: FieldElement) => {
+    if (composingFields.has(field)) {
+      return true
+    }
+
+    const lastEditAt = lastUserEditAt.get(field)
+    return lastEditAt !== undefined && getNow() - lastEditAt < USER_EDIT_AUTOFILL_SUPPRESSION_MS
+  }
+
+  const isFocusedField = (field: FieldElement) => documentObject.activeElement === field
+
+  const shouldSkipAutomaticAutofill = (field: FieldElement, source: AutofillEventSource) =>
+    source !== "popup" && (isFocusedField(field) || isUserEditingField(field))
+
+  const attachUserInteractionTracking = (field: FieldElement) => {
+    if (userInteractionTrackedFields.has(field)) {
+      return
+    }
+
+    field.addEventListener("compositionstart", () => {
+      if (!internalAutofillFields.has(field)) {
+        composingFields.add(field)
+        lastUserEditAt.set(field, getNow())
+      }
+    })
+    field.addEventListener("compositionend", () => {
+      if (!internalAutofillFields.has(field)) {
+        composingFields.delete(field)
+        lastUserEditAt.set(field, getNow())
+      }
+    })
+    field.addEventListener("beforeinput", (event) => markUserEdit(field, event))
+    field.addEventListener("input", (event) => markUserEdit(field, event))
+    userInteractionTrackedFields.add(field)
+  }
 
   const loadSnapshot = async () => {
-    snapshot = await getStorageSnapshot()
+    const nextSnapshot = await ignoreInvalidatedExtensionContext(() => getStorageSnapshot())
+    if (!nextSnapshot) {
+      return snapshot ?? createUnavailableStorageSnapshot()
+    }
+
+    snapshot = nextSnapshot
     syncLearningListeners(snapshot)
     syncMutationObserver()
     return snapshot
@@ -221,6 +362,10 @@ export const createAutofillController = ({
   }
 
   const persistCorrection = async (state: CorrectionState) => {
+    if (!extensionContextAvailable) {
+      return
+    }
+
     const currentValue = getFieldCurrentValue(state.field).trim()
 
     if (!currentValue || currentValue === state.autofilledValue || currentValue === state.lastPersistedValue) {
@@ -233,55 +378,61 @@ export const createAutofillController = ({
     }
 
     state.lastPersistedValue = currentValue
-    snapshot = await commitStorageChanges({
-      ...(isSecureVaultField(state.securityClassification) && state.secureVaultKind
-        ? {
-            secureVaultUpdates: [
-              {
-                hostname: state.hostname,
-                fieldSignature: state.fieldSignature,
-                kind: state.secureVaultKind,
-                value: currentValue,
-                incrementCorrected: true
-              }
-            ],
-            fieldMemoryDeletes: [
-              {
-                hostname: state.hostname,
-                fieldSignature: state.fieldSignature
-              }
-            ]
+    const nextSnapshot = await ignoreInvalidatedExtensionContext(() =>
+      commitStorageChanges({
+        ...(isSecureVaultField(state.securityClassification) && state.secureVaultKind
+          ? {
+              secureVaultUpdates: [
+                {
+                  hostname: state.hostname,
+                  fieldSignature: state.fieldSignature,
+                  kind: state.secureVaultKind,
+                  value: currentValue,
+                  incrementCorrected: true
+                }
+              ],
+              fieldMemoryDeletes: [
+                {
+                  hostname: state.hostname,
+                  fieldSignature: state.fieldSignature
+                }
+              ]
+            }
+          : {
+              fieldMemoryUpdates: [
+                {
+                  hostname: state.hostname,
+                  fieldSignature: state.fieldSignature,
+                  profileKey: state.profileKey,
+                  lastAutofilledValue: state.autofilledValue,
+                  lastUserValue: currentValue,
+                  timesAutofilled: currentSnapshot.fieldMemory[`${state.hostname}::${state.fieldSignature}`]?.timesAutofilled ?? 0,
+                  timesCorrected: (currentSnapshot.fieldMemory[`${state.hostname}::${state.fieldSignature}`]?.timesCorrected ?? 0) + 1,
+                  timesLearned: currentSnapshot.fieldMemory[`${state.hostname}::${state.fieldSignature}`]?.timesLearned ?? 0,
+                  learnedLabel: currentSnapshot.fieldMemory[`${state.hostname}::${state.fieldSignature}`]?.learnedLabel,
+                  updatedAt: new Date().toISOString()
+                }
+              ]
+            }),
+        eventEntries: [
+          {
+            type: "field_corrected_by_user",
+            hostname: state.hostname,
+            url: state.url,
+            fieldSignature: state.fieldSignature,
+            profileKey: state.profileKey,
+            ...createEventValueFields(state.securityClassification, state.autofilledValue, currentValue),
+            source: "storage-update",
+            runId: state.runId,
+            detail: appendRedactionDetail("correction", state.securityClassification)
           }
-        : {
-            fieldMemoryUpdates: [
-              {
-                hostname: state.hostname,
-                fieldSignature: state.fieldSignature,
-                profileKey: state.profileKey,
-                lastAutofilledValue: state.autofilledValue,
-                lastUserValue: currentValue,
-                timesAutofilled: currentSnapshot.fieldMemory[`${state.hostname}::${state.fieldSignature}`]?.timesAutofilled ?? 0,
-                timesCorrected: (currentSnapshot.fieldMemory[`${state.hostname}::${state.fieldSignature}`]?.timesCorrected ?? 0) + 1,
-                timesLearned: currentSnapshot.fieldMemory[`${state.hostname}::${state.fieldSignature}`]?.timesLearned ?? 0,
-                learnedLabel: currentSnapshot.fieldMemory[`${state.hostname}::${state.fieldSignature}`]?.learnedLabel,
-                updatedAt: new Date().toISOString()
-              }
-            ]
-          }),
-      eventEntries: [
-        {
-          type: "field_corrected_by_user",
-          hostname: state.hostname,
-          url: state.url,
-          fieldSignature: state.fieldSignature,
-          profileKey: state.profileKey,
-          ...createEventValueFields(state.securityClassification, state.autofilledValue, currentValue),
-          source: "storage-update",
-          runId: state.runId,
-          detail: appendRedactionDetail("correction", state.securityClassification)
-        }
-      ]
-    })
+        ]
+      })
+    )
+
+    if (nextSnapshot) {
+      snapshot = nextSnapshot
+    }
   }
 
   const attachCorrectionTracking = (
@@ -296,9 +447,15 @@ export const createAutofillController = ({
 
     autofillState.set(field, nextState)
 
-    const schedulePersist = (immediate: boolean) => {
+    attachUserInteractionTracking(field)
+
+    const schedulePersist = (immediate: boolean, event?: Event) => {
       const activeState = autofillState.get(field)
       if (!activeState) {
+        return
+      }
+
+      if (isComposingEvent(event) || composingFields.has(field)) {
         return
       }
 
@@ -317,14 +474,19 @@ export const createAutofillController = ({
     }
 
     if (field.dataset.autofillTracked !== "true") {
-      field.addEventListener("input", () => schedulePersist(false))
-      field.addEventListener("change", () => schedulePersist(true))
-      field.addEventListener("blur", () => schedulePersist(true))
+      field.addEventListener("input", (event) => schedulePersist(false, event))
+      field.addEventListener("compositionend", (event) => schedulePersist(false, event))
+      field.addEventListener("change", (event) => schedulePersist(true, event))
+      field.addEventListener("blur", (event) => schedulePersist(true, event))
       field.dataset.autofillTracked = "true"
     }
   }
 
   const persistLearnedInput = async (field: FieldElement, state: LearningState) => {
+    if (!extensionContextAvailable) {
+      return
+    }
+
     if (autofillState.has(field) || internalAutofillFields.has(field)) {
       return
     }
@@ -370,60 +532,66 @@ export const createAutofillController = ({
           : "memory:custom"
 
     state.lastPersistedValue = currentValue
-    snapshot = await commitStorageChanges({
-      ...(nextProfile ? { profile: nextProfile } : {}),
-      ...(isSecureField && learnableField.secureVaultKind
-        ? {
-            secureVaultUpdates: [
-              {
-                hostname: learnableField.descriptor.hostname,
-                fieldSignature: learnableField.fieldSignature,
-                kind: learnableField.secureVaultKind,
-                label: getLearnedLabel(learnableField.descriptor) ?? learnableField.secureVaultEntry?.label,
-                value: currentValue,
-                incrementLearned: true
-              }
-            ],
-            fieldMemoryDeletes: [
-              {
-                hostname: learnableField.descriptor.hostname,
-                fieldSignature: learnableField.fieldSignature
-              }
-            ]
+    const nextSnapshot = await ignoreInvalidatedExtensionContext(() =>
+      commitStorageChanges({
+        ...(nextProfile ? { profile: nextProfile } : {}),
+        ...(isSecureField && learnableField.secureVaultKind
+          ? {
+              secureVaultUpdates: [
+                {
+                  hostname: learnableField.descriptor.hostname,
+                  fieldSignature: learnableField.fieldSignature,
+                  kind: learnableField.secureVaultKind,
+                  label: getLearnedLabel(learnableField.descriptor) ?? learnableField.secureVaultEntry?.label,
+                  value: currentValue,
+                  incrementLearned: true
+                }
+              ],
+              fieldMemoryDeletes: [
+                {
+                  hostname: learnableField.descriptor.hostname,
+                  fieldSignature: learnableField.fieldSignature
+                }
+              ]
+            }
+          : {
+              fieldMemoryUpdates: [
+                {
+                  hostname: learnableField.descriptor.hostname,
+                  fieldSignature: learnableField.fieldSignature,
+                  profileKey: profileKey ?? undefined,
+                  learnedLabel: getLearnedLabel(learnableField.descriptor) ?? existingEntry?.learnedLabel,
+                  lastAutofilledValue: existingEntry?.lastAutofilledValue ?? "",
+                  lastUserValue: currentValue,
+                  timesAutofilled: existingEntry?.timesAutofilled ?? 0,
+                  timesCorrected: existingEntry?.timesCorrected ?? 0,
+                  timesLearned: (existingEntry?.timesLearned ?? 0) + 1,
+                  updatedAt: new Date().toISOString()
+                }
+              ]
+            }),
+        eventEntries: [
+          {
+            type: "field_learned_from_user",
+            hostname: learnableField.descriptor.hostname,
+            url: learnableField.descriptor.url,
+            fieldSignature: learnableField.fieldSignature,
+            profileKey: profileKey ?? undefined,
+            ...createEventValueFields(
+              learnableField.securityClassification,
+              previousLearnedValue || undefined,
+              currentValue
+            ),
+            source: "storage-update",
+            detail: appendRedactionDetail(eventDetail, learnableField.securityClassification)
           }
-        : {
-            fieldMemoryUpdates: [
-              {
-                hostname: learnableField.descriptor.hostname,
-                fieldSignature: learnableField.fieldSignature,
-                profileKey: profileKey ?? undefined,
-                learnedLabel: getLearnedLabel(learnableField.descriptor) ?? existingEntry?.learnedLabel,
-                lastAutofilledValue: existingEntry?.lastAutofilledValue ?? "",
-                lastUserValue: currentValue,
-                timesAutofilled: existingEntry?.timesAutofilled ?? 0,
-                timesCorrected: existingEntry?.timesCorrected ?? 0,
-                timesLearned: (existingEntry?.timesLearned ?? 0) + 1,
-                updatedAt: new Date().toISOString()
-              }
-            ]
-          }),
-      eventEntries: [
-        {
-          type: "field_learned_from_user",
-          hostname: learnableField.descriptor.hostname,
-          url: learnableField.descriptor.url,
-          fieldSignature: learnableField.fieldSignature,
-          profileKey: profileKey ?? undefined,
-          ...createEventValueFields(
-            learnableField.securityClassification,
-            previousLearnedValue || undefined,
-            currentValue
-          ),
-          source: "storage-update",
-          detail: appendRedactionDetail(eventDetail, learnableField.securityClassification)
-        }
-      ]
-    })
+        ]
+      })
+    )
+
+    if (nextSnapshot) {
+      snapshot = nextSnapshot
+    }
   }
 
   const queueLearnedInputPersist = (field: FieldElement, state: LearningState) => {
@@ -444,8 +612,14 @@ export const createAutofillController = ({
     }
     learningState.set(field, state)
 
-    const schedulePersist = (immediate: boolean) => {
+    attachUserInteractionTracking(field)
+
+    const schedulePersist = (immediate: boolean, event?: Event) => {
       if (internalAutofillFields.has(field)) {
+        return
+      }
+
+      if (isComposingEvent(event) || composingFields.has(field)) {
         return
       }
 
@@ -468,9 +642,10 @@ export const createAutofillController = ({
       }, 400)
     }
 
-    field.addEventListener("input", () => schedulePersist(false))
-    field.addEventListener("change", () => schedulePersist(true))
-    field.addEventListener("blur", () => schedulePersist(true))
+    field.addEventListener("input", (event) => schedulePersist(false, event))
+    field.addEventListener("compositionend", (event) => schedulePersist(false, event))
+    field.addEventListener("change", (event) => schedulePersist(true, event))
+    field.addEventListener("blur", (event) => schedulePersist(true, event))
     field.dataset.autofillLearnTracked = "true"
   }
 
@@ -488,6 +663,10 @@ export const createAutofillController = ({
   }
 
   const runAutofill = async (source: AutofillEventSource) => {
+    if (!extensionContextAvailable) {
+      return false
+    }
+
     const nextSnapshot = snapshot ?? (await loadSnapshot())
     if (!shouldAutofill(nextSnapshot)) {
       return false
@@ -520,7 +699,7 @@ export const createAutofillController = ({
       }
 
       const previousValue = getFieldCurrentValue(candidate.field)
-      if (previousValue.trim()) {
+      if (previousValue.trim() || shouldSkipAutomaticAutofill(candidate.field, source)) {
         continue
       }
 
@@ -602,17 +781,29 @@ export const createAutofillController = ({
       return false
     }
 
-    snapshot = await commitStorageChanges({
-      fieldMemoryUpdates,
-      fieldMemoryDeletes,
-      secureVaultUpdates,
-      eventEntries
-    })
+    const committedSnapshot = await ignoreInvalidatedExtensionContext(() =>
+      commitStorageChanges({
+        fieldMemoryUpdates,
+        fieldMemoryDeletes,
+        secureVaultUpdates,
+        eventEntries
+      })
+    )
+
+    if (!committedSnapshot) {
+      return false
+    }
+
+    snapshot = committedSnapshot
 
     return true
   }
 
   const scheduleNavigationRun = () => {
+    if (!extensionContextAvailable) {
+      return
+    }
+
     windowObject.clearTimeout(navigationTimer)
     navigationTimer = windowObject.setTimeout(() => {
       void loadSnapshot().then(() => runAutofill("navigation"))
@@ -641,6 +832,10 @@ export const createAutofillController = ({
   }
 
   const handleMessage = async (message: ExtensionMessage) => {
+    if (!extensionContextAvailable) {
+      return
+    }
+
     switch (message.type) {
       case "RUN_AUTOFILL":
         await loadSnapshot()
@@ -668,14 +863,31 @@ export const createAutofillController = ({
     }
 
     initialized = true
-    chromeApi.runtime.onMessage.addListener((message: ExtensionMessage) => {
-      void handleMessage(message)
-    })
+    installGlobalUserInteractionTracking()
+    try {
+      chromeApi.runtime.onMessage.addListener((message: ExtensionMessage) => {
+        void handleMessage(message)
+      })
+    } catch (error) {
+      if (isExtensionContextInvalidatedError(error)) {
+        deactivateInvalidatedExtensionContext()
+        return
+      }
+
+      throw error
+    }
 
     installNavigationListeners()
     await loadSnapshot()
+    if (!extensionContextAvailable) {
+      return
+    }
 
     const start = () => {
+      if (!extensionContextAvailable) {
+        return
+      }
+
       void runAutofill("automatic-load")
     }
 
@@ -698,6 +910,7 @@ export const createAutofillController = ({
       windowObject.clearTimeout(navigationTimer)
       observer?.disconnect()
       observer = null
+      removeGlobalUserInteractionTracking()
       initialized = false
     }
   }

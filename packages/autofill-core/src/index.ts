@@ -148,6 +148,53 @@ export const normalizeText = (value: string | null | undefined) =>
 
 type FieldElement = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
 
+const FORM_FIELD_SELECTOR = "input, textarea, select, button"
+const MAX_NEARBY_LABEL_LENGTH = 80
+
+const normalizeLabelCandidate = (value: string | null | undefined) => (value ?? "").replace(/\s+/g, " ").trim()
+
+const textFromIdRefs = (field: FieldElement, attributeName: "aria-labelledby") => {
+  const ids = field.getAttribute(attributeName)?.split(/\s+/).filter(Boolean) ?? []
+  return normalizeLabelCandidate(
+    ids
+      .map((id) => field.ownerDocument.getElementById(id)?.textContent ?? "")
+      .filter(Boolean)
+      .join(" ")
+  )
+}
+
+const hasNestedFormField = (element: Element) => Boolean(element.querySelector(FORM_FIELD_SELECTOR))
+
+const getNodeLabelText = (node: ChildNode) => {
+  if (node instanceof Text) {
+    return normalizeLabelCandidate(node.textContent)
+  }
+
+  if (!(node instanceof HTMLElement) || node.matches(FORM_FIELD_SELECTOR) || hasNestedFormField(node)) {
+    return ""
+  }
+
+  const text = normalizeLabelCandidate(node.textContent)
+  return text.length <= MAX_NEARBY_LABEL_LENGTH ? text : ""
+}
+
+const readPreviousSiblingLabelText = (field: FieldElement) => {
+  let sibling = field.previousSibling
+  let inspected = 0
+
+  while (sibling && inspected < 4) {
+    const text = getNodeLabelText(sibling)
+    if (text) {
+      return text
+    }
+
+    sibling = sibling.previousSibling
+    inspected += 1
+  }
+
+  return ""
+}
+
 const readLabelText = (field: FieldElement) => {
   const labels = field.labels ? Array.from(field.labels) : []
 
@@ -158,6 +205,11 @@ const readLabelText = (field: FieldElement) => {
       .trim()
   }
 
+  const ariaLabelledByText = textFromIdRefs(field, "aria-labelledby")
+  if (ariaLabelledByText) {
+    return ariaLabelledByText
+  }
+
   if (field.id) {
     const inlineLabel = field.ownerDocument.querySelector(`label[for="${field.id}"]`)
     if (inlineLabel?.textContent) {
@@ -166,7 +218,7 @@ const readLabelText = (field: FieldElement) => {
   }
 
   const wrappingLabel = field.closest("label")
-  return wrappingLabel?.textContent?.trim() ?? ""
+  return wrappingLabel?.textContent?.trim() || readPreviousSiblingLabelText(field)
 }
 
 export const buildFieldDescriptor = (
