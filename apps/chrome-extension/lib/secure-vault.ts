@@ -93,6 +93,8 @@ export type SecureVaultApiTokenItemPayload = {
   token: string
   serviceUrl?: string
   accountName?: string
+  accountId?: string
+  agentVaultItem?: string
   notes?: string
 }
 
@@ -228,6 +230,8 @@ export const stringifySecureVaultApiTokenItemPayload = (
     token: payload.token.trim(),
     ...(payload.serviceUrl?.trim() ? { serviceUrl: payload.serviceUrl.trim() } : {}),
     ...(payload.accountName?.trim() ? { accountName: payload.accountName.trim() } : {}),
+    ...(payload.accountId?.trim() ? { accountId: payload.accountId.trim() } : {}),
+    ...(payload.agentVaultItem?.trim() ? { agentVaultItem: payload.agentVaultItem.trim() } : {}),
     ...(payload.notes?.trim() ? { notes: payload.notes.trim() } : {})
   } satisfies SecureVaultApiTokenItemPayload)
 
@@ -246,6 +250,8 @@ export const parseSecureVaultApiTokenItemPayload = (value?: string): SecureVault
         token: parsed.token.trim(),
         ...(parsed.serviceUrl?.trim() ? { serviceUrl: parsed.serviceUrl.trim() } : {}),
         ...(parsed.accountName?.trim() ? { accountName: parsed.accountName.trim() } : {}),
+        ...(parsed.accountId?.trim() ? { accountId: parsed.accountId.trim() } : {}),
+        ...(parsed.agentVaultItem?.trim() ? { agentVaultItem: parsed.agentVaultItem.trim() } : {}),
         ...(parsed.notes?.trim() ? { notes: parsed.notes.trim() } : {})
       }
     }

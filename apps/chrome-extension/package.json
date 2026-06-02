@@ -35,7 +35,8 @@
       "storage",
       "identity",
       "identity.email",
-      "clipboardWrite"
+      "clipboardWrite",
+      "nativeMessaging"
     ],
     "host_permissions": [
       "<all_urls>"

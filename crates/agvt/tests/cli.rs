@@ -18,6 +18,7 @@ fn cloudflare_preset_round_trip_and_run() {
     let add_output = agvt_command(&vault_path)
         .args(["add", "cloudflare"])
         .env("CLOUDFLARE_API_TOKEN", "cloudflare_dummy_secret")
+        .env("CLOUDFLARE_ACCOUNT_ID", "cloudflare_account_id")
         .output()
         .unwrap();
     assert!(
@@ -51,7 +52,7 @@ fn cloudflare_preset_round_trip_and_run() {
             "--",
             "sh",
             "-c",
-            "printf '%s|%s' \"$CLOUDFLARE_API_TOKEN\" \"$AGVT_PASSPHRASE\"",
+            "printf '%s|%s|%s' \"$CLOUDFLARE_API_TOKEN\" \"$CLOUDFLARE_ACCOUNT_ID\" \"$AGVT_PASSPHRASE\"",
         ])
         .output()
         .unwrap();
@@ -62,7 +63,7 @@ fn cloudflare_preset_round_trip_and_run() {
     );
     assert_eq!(
         String::from_utf8_lossy(&run_output.stdout),
-        "cloudflare_dummy_secret|"
+        "cloudflare_dummy_secret|cloudflare_account_id|"
     );
 }
 
@@ -96,6 +97,87 @@ fn run_resolves_environment_secret_references() {
         String::from_utf8_lossy(&run_output.stdout),
         "github_dummy_secret"
     );
+}
+
+#[test]
+fn stores_totp_items_and_reads_secret_fields() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+
+    let add_output = agvt_command(&vault_path)
+        .args([
+            "add",
+            "github-totp",
+            "--kind",
+            "totp",
+            "--from-env",
+            "TOTP_SECRET",
+            "--field",
+            "issuer=GitHub",
+            "--account",
+            "deploy-bot",
+        ])
+        .env("TOTP_SECRET", "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
+        .output()
+        .unwrap();
+    assert!(
+        add_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let read_output = agvt_command(&vault_path)
+        .args(["read", "agvt://github-totp/issuer"])
+        .output()
+        .unwrap();
+    assert!(
+        read_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&read_output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&read_output.stdout).trim(),
+        "GitHub"
+    );
+}
+
+#[test]
+fn run_can_redact_output_and_use_clean_environment() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+
+    let add_output = agvt_command(&vault_path)
+        .args(["add", "github"])
+        .env("GITHUB_TOKEN", "github_dummy_secret")
+        .output()
+        .unwrap();
+    assert!(
+        add_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let run_output = agvt_command(&vault_path)
+        .args([
+            "run",
+            "--env",
+            "TOKEN=github",
+            "--clean-env",
+            "--redact-output",
+            "--",
+            "sh",
+            "-c",
+            "printf '%s|%s' \"$TOKEN\" \"${LEAK_ME:-}\"",
+        ])
+        .env("LEAK_ME", "should_not_pass")
+        .output()
+        .unwrap();
+    assert!(
+        run_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run_output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run_output.stdout), "[REDACTED]|");
 }
 
 #[test]

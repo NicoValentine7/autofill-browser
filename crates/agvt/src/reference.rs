@@ -67,11 +67,13 @@ pub fn validate_env_name(value: &str) -> Result<String> {
 
 pub fn validate_field_name(value: &str) -> Result<String> {
     match value {
-        "token" | "serviceUrl" | "service-url" | "accountName" | "account" | "notes" => {
-            Ok(value.to_owned())
-        }
+        "token" | "serviceUrl" | "service-url" | "accountName" | "account" | "account-name"
+        | "accountId" | "account-id" | "tokenId" | "token-id" | "expiresOn" | "expires-on"
+        | "notes" | "secret" | "totp-secret" | "password" | "username" | "url" | "issuer"
+        | "privateKey" | "private-key" | "publicKey" | "public-key" | "passphrase" | "period"
+        | "digits" => Ok(value.to_owned()),
         _ => Err(AgvtError::new(
-            "field must be one of token, serviceUrl, service-url, accountName, account, or notes.",
+            "field must be a supported Agent Vault field.",
         )),
     }
 }
@@ -79,7 +81,13 @@ pub fn validate_field_name(value: &str) -> Result<String> {
 pub fn canonical_field_name(value: &str) -> Result<String> {
     Ok(match validate_field_name(value)?.as_str() {
         "service-url" => "serviceUrl".to_owned(),
-        "account" => "accountName".to_owned(),
+        "account" | "account-name" => "accountName".to_owned(),
+        "account-id" => "accountId".to_owned(),
+        "token-id" => "tokenId".to_owned(),
+        "expires-on" => "expiresOn".to_owned(),
+        "totp-secret" => "secret".to_owned(),
+        "private-key" => "privateKey".to_owned(),
+        "public-key" => "publicKey".to_owned(),
         other => other.to_owned(),
     })
 }

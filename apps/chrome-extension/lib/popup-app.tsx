@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react"
 import { createEmptyProfile, getDomainPolicy, isProfileConfigured, type DomainPolicy, type EventLogEntry, type StoredProfile } from "@autofill-browser/autofill-core"
 
 import { fetchRemoteRules, fetchSignedInUser, pullSyncedSnapshot, pushSyncedSnapshot, type SyncField } from "./account-sync"
+import { normalizeAgentVaultItemName, upsertAgentVaultApiToken } from "./agent-vault-native"
 import { clearGoogleAuthTokens, getGoogleAccessToken } from "./google-auth"
 import type { ExtensionMessage } from "./messages"
 import { sendMessageToTab } from "./messages"
@@ -142,6 +143,8 @@ function PopupApp() {
   const [apiTokenLabel, setApiTokenLabel] = useState("")
   const [apiTokenServiceUrl, setApiTokenServiceUrl] = useState("")
   const [apiTokenAccountName, setApiTokenAccountName] = useState("")
+  const [apiTokenAccountId, setApiTokenAccountId] = useState("")
+  const [apiTokenAgentVaultItem, setApiTokenAgentVaultItem] = useState("")
   const [apiTokenValue, setApiTokenValue] = useState("")
   const [apiTokenNotes, setApiTokenNotes] = useState("")
   const [showApiTokenValue, setShowApiTokenValue] = useState(false)
@@ -464,6 +467,8 @@ function PopupApp() {
     setApiTokenLabel("")
     setApiTokenServiceUrl("")
     setApiTokenAccountName("")
+    setApiTokenAccountId("")
+    setApiTokenAgentVaultItem("")
     setApiTokenValue("")
     setApiTokenNotes("")
     setShowApiTokenValue(false)
@@ -486,6 +491,8 @@ function PopupApp() {
             token: value,
             serviceUrl: apiTokenServiceUrl,
             accountName: apiTokenAccountName,
+            accountId: apiTokenAccountId,
+            agentVaultItem: apiTokenAgentVaultItem,
             notes: apiTokenNotes
           }),
           label: apiTokenLabel.trim() || editingApiTokenEntry.label || "API token"
@@ -496,6 +503,8 @@ function PopupApp() {
             token: value,
             serviceUrl: apiTokenServiceUrl,
             accountName: apiTokenAccountName,
+            accountId: apiTokenAccountId,
+            agentVaultItem: apiTokenAgentVaultItem,
             notes: apiTokenNotes
           }),
           label: apiTokenLabel.trim() || "API token"
@@ -517,6 +526,24 @@ function PopupApp() {
     setSnapshot(nextSnapshot)
     resetApiTokenForm()
     await pushSnapshotIfSignedIn(nextSnapshot, ["secureVault"])
+    const normalizedAgentVaultItem = normalizeAgentVaultItemName(apiTokenAgentVaultItem)
+    if (normalizedAgentVaultItem) {
+      const bridgeResult = await upsertAgentVaultApiToken({
+        item: normalizedAgentVaultItem,
+        token: value,
+        label: apiTokenLabel.trim() || "API token",
+        serviceUrl: apiTokenServiceUrl,
+        accountName: apiTokenAccountName,
+        accountId: apiTokenAccountId,
+        notes: apiTokenNotes
+      })
+      setStatus(
+        bridgeResult.ok
+          ? "API tokenをSecure VaultとAgent Vaultへ保存したで"
+          : `API tokenはSecure Vaultへ保存したで / Agent Vault bridgeは未接続やな`
+      )
+      return
+    }
     setStatus(editingApiTokenEntry ? "API tokenを更新したで" : "API tokenをVaultに保存したで")
   }
 
@@ -531,6 +558,8 @@ function PopupApp() {
     setApiTokenLabel(entry.label ?? "API token")
     setApiTokenServiceUrl(payload.serviceUrl ?? "")
     setApiTokenAccountName(payload.accountName ?? "")
+    setApiTokenAccountId(payload.accountId ?? "")
+    setApiTokenAgentVaultItem(payload.agentVaultItem ?? "")
     setApiTokenValue(payload.token)
     setApiTokenNotes(payload.notes ?? "")
     setShowApiTokenValue(false)
@@ -778,6 +807,26 @@ function PopupApp() {
             />
           </label>
           <label style={{ display: "grid", gap: 4, fontSize: 12 }}>
+            <span>Cloudflare Account ID</span>
+            <input
+              value={apiTokenAccountId}
+              onChange={(event) => setApiTokenAccountId(event.target.value)}
+              placeholder="例: 0123456789abcdef"
+              autoComplete="off"
+              style={inputStyle}
+            />
+          </label>
+          <label style={{ display: "grid", gap: 4, fontSize: 12 }}>
+            <span>Agent Vault item</span>
+            <input
+              value={apiTokenAgentVaultItem}
+              onChange={(event) => setApiTokenAgentVaultItem(normalizeAgentVaultItemName(event.target.value))}
+              placeholder="例: cloudflare"
+              autoComplete="off"
+              style={inputStyle}
+            />
+          </label>
+          <label style={{ display: "grid", gap: 4, fontSize: 12 }}>
             <span>API token</span>
             <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8 }}>
               <input
@@ -853,9 +902,14 @@ function PopupApp() {
                   </span>
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#c7d0dd" }}>
                     {payload
-                      ? [payload.accountName, payload.serviceUrl].filter(Boolean).join(" / ") || "詳細なし"
+                      ? [payload.accountName, payload.accountId, payload.serviceUrl].filter(Boolean).join(" / ") || "詳細なし"
                       : "Vault Key復元後に詳細表示"}
                   </span>
+                  {payload?.agentVaultItem ? (
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#99f6e4" }}>
+                      agvt://{payload.agentVaultItem}/token
+                    </span>
+                  ) : null}
                   {payload?.notes ? (
                     <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#94a3b8" }}>
                       {payload.notes}

@@ -10,8 +10,10 @@ use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
 use ring::pbkdf2;
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 use crate::error::{AgvtError, Result};
+use crate::keychain;
 use crate::reference::SecretRef;
 
 pub const DEFAULT_AGENT_VAULT_PATH: &str = ".local/agent-vault.json";
@@ -76,20 +78,6 @@ pub struct VaultFile {
     pub updated_at: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ApiTokenPayload {
-    #[serde(rename = "schemaVersion")]
-    pub schema_version: u8,
-    pub kind: String,
-    pub token: String,
-    #[serde(rename = "serviceUrl", skip_serializing_if = "Option::is_none")]
-    pub service_url: Option<String>,
-    #[serde(rename = "accountName", skip_serializing_if = "Option::is_none")]
-    pub account_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub notes: Option<String>,
-}
-
 #[derive(Clone, Debug)]
 pub struct UpsertTokenInput {
     pub secret_ref: SecretRef,
@@ -97,7 +85,27 @@ pub struct UpsertTokenInput {
     pub label: Option<String>,
     pub service_url: Option<String>,
     pub account_name: Option<String>,
+    pub account_id: Option<String>,
+    pub token_id: Option<String>,
+    pub expires_on: Option<String>,
     pub notes: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct UpsertSecretInput {
+    pub secret_ref: SecretRef,
+    pub kind: String,
+    pub label: Option<String>,
+    pub fields: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ListedItem {
+    pub vault: String,
+    pub item: String,
+    pub kind: String,
+    pub label: String,
+    pub updated_at: String,
 }
 
 fn random_bytes(length: usize) -> Result<Vec<u8>> {
@@ -125,6 +133,81 @@ fn now_stamp() -> String {
 
 fn json_string(value: &str) -> String {
     serde_json::to_string(value).expect("string serialization should not fail")
+}
+
+pub fn validate_item_kind(value: &str) -> Result<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "api-token" | "login" | "totp" | "ssh-key" | "custom" | "secret" => Ok(normalized),
+        _ => Err(AgvtError::new(
+            "kind must be one of api-token, login, totp, ssh-key, custom, or secret.",
+        )),
+    }
+}
+
+pub fn canonical_payload_field(value: &str) -> Result<String> {
+    let trimmed = value.trim();
+    Ok(match trimmed {
+        "service-url" => "serviceUrl".to_owned(),
+        "account" | "account-name" => "accountName".to_owned(),
+        "account-id" => "accountId".to_owned(),
+        "token-id" => "tokenId".to_owned(),
+        "expires-on" => "expiresOn".to_owned(),
+        "private-key" => "privateKey".to_owned(),
+        "public-key" => "publicKey".to_owned(),
+        "totp-secret" => "secret".to_owned(),
+        "token" | "serviceUrl" | "accountName" | "accountId" | "tokenId" | "expiresOn"
+        | "notes" | "secret" | "password" | "username" | "url" | "issuer" | "privateKey"
+        | "publicKey" | "passphrase" | "period" | "digits" => trimmed.to_owned(),
+        _ => {
+            return Err(AgvtError::new(
+                "field must be a supported Agent Vault field name.",
+            ))
+        }
+    })
+}
+
+fn build_secret_payload(kind: &str, fields: &BTreeMap<String, String>) -> Result<String> {
+    let normalized_kind = validate_item_kind(kind)?;
+    let mut payload = Map::new();
+    payload.insert(
+        "schemaVersion".to_owned(),
+        Value::Number(serde_json::Number::from(SCHEMA_VERSION)),
+    );
+    payload.insert("kind".to_owned(), Value::String(normalized_kind));
+    for (field, value) in fields {
+        let canonical_field = canonical_payload_field(field)?;
+        let trimmed_value = value.trim();
+        if !trimmed_value.is_empty() {
+            payload.insert(canonical_field, Value::String(trimmed_value.to_owned()));
+        }
+    }
+    Ok(serde_json::to_string(&Value::Object(payload))?)
+}
+
+fn parse_secret_payload(plaintext: &str) -> Result<(String, BTreeMap<String, String>)> {
+    let parsed: Value = serde_json::from_str(plaintext)?;
+    let object = parsed
+        .as_object()
+        .ok_or_else(|| AgvtError::new("Vault item payload is not an object."))?;
+    if object.get("schemaVersion").and_then(Value::as_u64) != Some(u64::from(SCHEMA_VERSION)) {
+        return Err(AgvtError::new("unsupported Vault item payload schema."));
+    }
+    let kind = object
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AgvtError::new("Vault item payload is missing kind."))?;
+    let normalized_kind = validate_item_kind(kind)?;
+    let mut fields = BTreeMap::new();
+    for (field, value) in object {
+        if field == "schemaVersion" || field == "kind" {
+            continue;
+        }
+        if let Some(string_value) = value.as_str() {
+            fields.insert(canonical_payload_field(field)?, string_value.to_owned());
+        }
+    }
+    Ok((normalized_kind, fields))
 }
 
 fn build_key_check_aad(vault: &VaultFile) -> Vec<u8> {
@@ -278,17 +361,31 @@ fn create_vault(passphrase: &str) -> Result<VaultFile> {
     Ok(vault)
 }
 
-pub fn require_passphrase() -> Result<String> {
-    let value = std::env::var(AGVT_PASSPHRASE_ENV)
-        .or_else(|_| std::env::var(LEGACY_PASSPHRASE_ENV))
-        .unwrap_or_default();
+fn validate_passphrase_value(value: &str, source: &str) -> Result<String> {
     let trimmed = value.trim().to_owned();
     if trimmed.len() < 24 {
         return Err(AgvtError::new(format!(
-            "{AGVT_PASSPHRASE_ENV} must be at least 24 characters."
+            "{source} must be at least 24 characters."
         )));
     }
     Ok(trimmed)
+}
+
+pub fn require_passphrase_for_path(path: &Path) -> Result<String> {
+    let value = std::env::var(AGVT_PASSPHRASE_ENV)
+        .or_else(|_| std::env::var(LEGACY_PASSPHRASE_ENV))
+        .unwrap_or_default();
+    if !value.trim().is_empty() {
+        return validate_passphrase_value(&value, AGVT_PASSPHRASE_ENV);
+    }
+
+    if let Some(passphrase) = keychain::read_passphrase(path)? {
+        return validate_passphrase_value(&passphrase, "macOS Keychain passphrase");
+    }
+
+    Err(AgvtError::new(format!(
+        "{AGVT_PASSPHRASE_ENV} must be set, or store it with `agvt keychain set`."
+    )))
 }
 
 pub fn default_vault_path() -> String {
@@ -348,36 +445,83 @@ fn unlock_vault(vault: &VaultFile, passphrase: &str) -> Result<LessSafeKey> {
 }
 
 pub fn upsert_api_token(path: &Path, passphrase: &str, input: UpsertTokenInput) -> Result<()> {
+    let mut fields = BTreeMap::new();
+    fields.insert("token".to_owned(), input.token);
+    if let Some(service_url) = input.service_url {
+        fields.insert("serviceUrl".to_owned(), service_url);
+    }
+    if let Some(account_name) = input.account_name {
+        fields.insert("accountName".to_owned(), account_name);
+    }
+    if let Some(account_id) = input.account_id {
+        fields.insert("accountId".to_owned(), account_id);
+    }
+    if let Some(token_id) = input.token_id {
+        fields.insert("tokenId".to_owned(), token_id);
+    }
+    if let Some(expires_on) = input.expires_on {
+        fields.insert("expiresOn".to_owned(), expires_on);
+    }
+    if let Some(notes) = input.notes {
+        fields.insert("notes".to_owned(), notes);
+    }
+
+    upsert_secret(
+        path,
+        passphrase,
+        UpsertSecretInput {
+            secret_ref: input.secret_ref,
+            kind: "api-token".to_owned(),
+            label: input.label,
+            fields,
+        },
+    )
+}
+
+pub fn upsert_secret(path: &Path, passphrase: &str, input: UpsertSecretInput) -> Result<()> {
     let mut vault = match load_vault(path)? {
         Some(vault) => vault,
         None => create_vault(passphrase)?,
     };
     let key = unlock_vault(&vault, passphrase)?;
-    if input.token.len() > MAX_SECRET_BYTES {
-        return Err(AgvtError::new("API token value is too large."));
-    }
+    let kind = validate_item_kind(&input.kind)?;
     let storage_name = input.secret_ref.storage_name();
     let existing = vault.items.get(&storage_name);
     let timestamp = now_stamp();
-    let payload = ApiTokenPayload {
-        schema_version: SCHEMA_VERSION,
-        kind: "api-token".to_owned(),
-        token: input.token.trim().to_owned(),
-        service_url: input.service_url.filter(|value| !value.trim().is_empty()),
-        account_name: input.account_name.filter(|value| !value.trim().is_empty()),
-        notes: input.notes.filter(|value| !value.trim().is_empty()),
-    };
-    if payload.token.is_empty() {
-        return Err(AgvtError::new("API token value is required."));
+
+    let mut fields = BTreeMap::new();
+    for (field, value) in input.fields {
+        let canonical_field = canonical_payload_field(&field)?;
+        let trimmed_value = value.trim().to_owned();
+        if trimmed_value.len() > MAX_SECRET_BYTES {
+            return Err(AgvtError::new("Vault field value is too large."));
+        }
+        if !trimmed_value.is_empty() {
+            fields.insert(canonical_field, trimmed_value);
+        }
     }
+    let required_field = match kind.as_str() {
+        "api-token" => "token",
+        "login" => "password",
+        "totp" => "secret",
+        "ssh-key" => "privateKey",
+        "custom" | "secret" => "secret",
+        _ => "secret",
+    };
+    if !fields.contains_key(required_field) {
+        return Err(AgvtError::new(format!(
+            "{kind} item requires encrypted field `{required_field}`."
+        )));
+    }
+    let payload = build_secret_payload(&kind, &fields)?;
     let encrypted_value = encrypt_text(
-        &serde_json::to_string(&payload)?,
+        &payload,
         &key,
-        &build_item_aad(&vault, &storage_name, "api-token"),
+        &build_item_aad(&vault, &storage_name, &kind),
     )?;
     let item = VaultItem {
         schema_version: SCHEMA_VERSION,
-        kind: "api-token".to_owned(),
+        kind,
         label: input
             .label
             .filter(|value| !value.trim().is_empty())
@@ -394,11 +538,11 @@ pub fn upsert_api_token(path: &Path, passphrase: &str, input: UpsertTokenInput) 
     save_vault(path, &vault)
 }
 
-pub fn read_api_token(
+pub fn read_secret_payload(
     path: &Path,
     passphrase: &str,
     secret_ref: &SecretRef,
-) -> Result<ApiTokenPayload> {
+) -> Result<(String, BTreeMap<String, String>)> {
     let vault =
         load_vault(path)?.ok_or_else(|| AgvtError::new("Agent Vault file does not exist."))?;
     let key = unlock_vault(&vault, passphrase)?;
@@ -412,27 +556,13 @@ pub fn read_api_token(
         &key,
         &build_item_aad(&vault, &storage_name, &item.kind),
     )?;
-    let payload: ApiTokenPayload = serde_json::from_str(&plaintext)?;
-    if payload.kind != "api-token" || payload.token.trim().is_empty() {
-        return Err(AgvtError::new("Vault item is not an API token."));
-    }
-    Ok(payload)
+    parse_secret_payload(&plaintext)
 }
 
-pub fn read_api_token_field(
-    path: &Path,
-    passphrase: &str,
-    secret_ref: &SecretRef,
-) -> Result<String> {
-    let payload = read_api_token(path, passphrase, secret_ref)?;
-    let value = match secret_ref.field.as_str() {
-        "token" => payload.token,
-        "serviceUrl" => payload.service_url.unwrap_or_default(),
-        "accountName" => payload.account_name.unwrap_or_default(),
-        "notes" => payload.notes.unwrap_or_default(),
-        _ => return Err(AgvtError::new("unsupported field.")),
-    };
-    Ok(value)
+pub fn read_secret_field(path: &Path, passphrase: &str, secret_ref: &SecretRef) -> Result<String> {
+    let (_kind, fields) = read_secret_payload(path, passphrase, secret_ref)?;
+    let field = canonical_payload_field(&secret_ref.field)?;
+    Ok(fields.get(&field).cloned().unwrap_or_default())
 }
 
 pub fn delete_item(path: &Path, passphrase: &str, secret_ref: &SecretRef) -> Result<()> {
@@ -444,7 +574,7 @@ pub fn delete_item(path: &Path, passphrase: &str, secret_ref: &SecretRef) -> Res
     save_vault(path, &vault)
 }
 
-pub fn list_items(path: &Path) -> Result<Vec<(String, String, String, String)>> {
+pub fn list_items(path: &Path) -> Result<Vec<ListedItem>> {
     let Some(vault) = load_vault(path)? else {
         return Ok(Vec::new());
     };
@@ -456,12 +586,13 @@ pub fn list_items(path: &Path) -> Result<Vec<(String, String, String, String)>> 
                 .split_once(':')
                 .map(|(vault_name, item_name)| (vault_name.to_owned(), item_name.to_owned()))
                 .unwrap_or_else(|| ("dev".to_owned(), storage_name.clone()));
-            (
-                vault_name,
-                item_name,
-                item.label.clone(),
-                item.updated_at.clone(),
-            )
+            ListedItem {
+                vault: vault_name,
+                item: item_name,
+                kind: item.kind.clone(),
+                label: item.label.clone(),
+                updated_at: item.updated_at.clone(),
+            }
         })
         .collect())
 }
@@ -489,6 +620,9 @@ mod tests {
                 label: Some("Cloudflare".to_owned()),
                 service_url: Some("https://api.cloudflare.com/client/v4".to_owned()),
                 account_name: None,
+                account_id: Some("account-123".to_owned()),
+                token_id: Some("token-123".to_owned()),
+                expires_on: Some("2026-12-31T00:00:00Z".to_owned()),
                 notes: Some("test note".to_owned()),
             },
         )
@@ -498,17 +632,26 @@ mod tests {
         assert!(!raw.contains("dummy-token"));
         assert!(!raw.contains("api.cloudflare.com"));
         assert_eq!(
-            read_api_token_field(&path, passphrase, &secret_ref).unwrap(),
+            read_secret_field(&path, passphrase, &secret_ref).unwrap(),
             "dummy-token"
         );
         assert_eq!(
-            read_api_token_field(
+            read_secret_field(
                 &path,
                 passphrase,
                 &item_target_to_ref("agvt://cloudflare/service-url", "dev", "token").unwrap()
             )
             .unwrap(),
             "https://api.cloudflare.com/client/v4"
+        );
+        assert_eq!(
+            read_secret_field(
+                &path,
+                passphrase,
+                &item_target_to_ref("agvt://cloudflare/account-id", "dev", "token").unwrap()
+            )
+            .unwrap(),
+            "account-123"
         );
     }
 
@@ -526,14 +669,16 @@ mod tests {
                 label: None,
                 service_url: None,
                 account_name: None,
+                account_id: None,
+                token_id: None,
+                expires_on: None,
                 notes: None,
             },
         )
         .unwrap();
 
         assert!(
-            read_api_token_field(&path, "wrong-passphrase-with-enough-length", &secret_ref)
-                .is_err()
+            read_secret_field(&path, "wrong-passphrase-with-enough-length", &secret_ref).is_err()
         );
     }
 }

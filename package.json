@@ -21,6 +21,8 @@
     "agvt": "cargo run --quiet --manifest-path crates/agvt/Cargo.toml --",
     "build:agvt": "cargo build --manifest-path crates/agvt/Cargo.toml",
     "test:agvt": "cargo test --manifest-path crates/agvt/Cargo.toml",
+    "install:agvt": "cargo install --path crates/agvt --locked",
+    "install:agvt-native-host": "scripts/install-agvt-native-host.sh",
     "setup:extension-key": "node scripts/setup-extension-key.mjs",
     "set:google-oauth-client": "node scripts/set-google-oauth-client-id.mjs",
     "sync:android-rules": "node scripts/sync-android-rules.mjs",

@@ -84,28 +84,75 @@ pnpm dev:extension
 
 #### Agent Vault for Codex / Claude Code
 
-Codex や Claude Code から開発用 API token を使う場合は、Chrome popupのコピーではなく、Rust CLI の `agvt` を使います。デフォルトの保存先は `.local/agent-vault.json` で、`.local/` はgit管理外です。token本体、service URL、account、notesは暗号化payloadに入り、`agvt ls` ではvault名・item名・label・更新日時だけを出します。
+Codex や Claude Code から開発用 API token を使う場合は、Rust CLI の `agvt` を使います。デフォルトの保存先は `.local/agent-vault.json` で、`.local/` はgit管理外です。token本体、service URL、account、account ID、notesは暗号化payloadに入り、`agvt ls` ではvault名・item名・kind・label・更新日時だけを出します。
 
 ```bash
 export AGVT_PASSPHRASE="24文字以上のローカルpassphrase"
+pnpm agvt keychain set
 
 export CLOUDFLARE_API_TOKEN="<cloudflare-api-token>"
+export CLOUDFLARE_ACCOUNT_ID="<cloudflare-account-id>"
 pnpm agvt add cloudflare
 pnpm agvt run cloudflare -- npx wrangler whoami
 
 GITHUB_TOKEN=agvt://github/token pnpm agvt run -- gh auth status
+pnpm agvt read agvt://cloudflare/account-id
 pnpm agvt read agvt://cloudflare/token
 pnpm agvt inject .env.template
 ```
 
-`cloudflare` と `github` はプリセットです。`pnpm agvt presets` で確認できます。`agvt://cloudflare/token` のような短縮secret referenceは `agvt://dev/cloudflare/token` として扱います。カスタムtokenは `--from-stdin` か `--from-env TOKEN_ENV_NAME` を使い、tokenをコマンド引数に直接載せないでください。`run` は指定したtokenだけを子プロセスへ渡し、`AGVT_PASSPHRASE` と `AUTOFILL_AGENT_VAULT_PASSPHRASE` は子プロセス環境から外します。
+`cloudflare` と `github` はプリセットです。`pnpm agvt presets --json` で確認できます。`cloudflare` は `CLOUDFLARE_API_TOKEN` に加えて、保存済みなら `CLOUDFLARE_ACCOUNT_ID` も `run` で渡します。`agvt://cloudflare/token` のような短縮secret referenceは `agvt://dev/cloudflare/token` として扱います。カスタムtokenは `--from-stdin` か `--from-env TOKEN_ENV_NAME` を使い、tokenをコマンド引数に直接載せないでください。
+
+`AGVT_PASSPHRASE` が未設定の場合、macOSでは `agvt keychain set` で保存したpassphraseをKeychainから読みます。Keychainを使わない場合は `AGVT_KEYCHAIN=0` を付けます。
+
+```bash
+printf '%s' "$AGVT_PASSPHRASE" | pnpm agvt keychain set --from-stdin
+pnpm agvt keychain status
+unset AGVT_PASSPHRASE
+pnpm agvt ls
+```
+
+`run` は指定したsecretだけを子プロセスへ渡し、`AGVT_PASSPHRASE` と `AUTOFILL_AGENT_VAULT_PASSPHRASE` は子プロセス環境から外します。漏洩を減らしたい時は `--clean-env` と `--redact-output` を使います。macOSでは `--sandbox no-network` でネットワーク送信をベストエフォートで塞げます。
+
+```bash
+pnpm agvt run cloudflare --clean-env --redact-output -- npx wrangler whoami
+pnpm agvt run github --sandbox no-network -- gh auth status
+```
+
+Cloudflare tokenは、発行権限を持つfactory tokenとpolicy fileがあれば `agvt` から作成して、そのまま暗号化保存できます。policy bodyはCloudflare APIの `/user/tokens` 作成形式に合わせます。
+
+```bash
+export CLOUDFLARE_TOKEN_FACTORY_TOKEN="<token-create-capable-token>"
+pnpm agvt cloudflare create-token cloudflare \
+  --name "agvt cloudflare dev" \
+  --account-id "$CLOUDFLARE_ACCOUNT_ID" \
+  --policy-file docs/agvt-cloudflare-token-policy.example.json
+```
+
+API token以外のkindも保存できます。
+
+```bash
+pnpm agvt add github-totp --kind totp --from-env TOTP_SECRET --field issuer=GitHub --account nico
+pnpm agvt totp github-totp
+
+printf '%s' "$SSH_PRIVATE_KEY" | pnpm agvt add github-ssh --kind ssh-key --field-stdin private-key --field public-key="$SSH_PUBLIC_KEY"
+pnpm agvt read agvt://github-ssh/private-key
+```
 
 単体コマンドとして使う場合は以下で入れます。
 
 ```bash
-cargo install --path crates/agvt
+pnpm install:agvt
 agvt add cloudflare
 agvt run cloudflare -- npx wrangler whoami
+```
+
+Chrome popupのAPI Token Vaultは、native hostを入れると保存時に同じtokenをAgent Vaultへも保存できます。popupの「Agent Vault item」に `cloudflare` などを入れて保存してください。host未インストール時はSecure Vault保存だけ続行します。
+
+```bash
+pnpm install:agvt
+pnpm install:agvt-native-host
+pnpm build:extension
 ```
 
 CLIの実動作確認は以下です。
