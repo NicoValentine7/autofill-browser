@@ -1,0 +1,14 @@
+[
+  {
+    "effect": "allow",
+    "permission_groups": [
+      {
+        "id": "replace-with-cloudflare-permission-group-id",
+        "meta": {}
+      }
+    ],
+    "resources": {
+      "com.cloudflare.api.account.replace-with-account-id": "*"
+    }
+  }
+]

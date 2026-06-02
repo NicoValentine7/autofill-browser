@@ -35,7 +35,9 @@
       "activeTab",
       "storage",
       "identity",
-      "identity.email"
+      "identity.email",
+      "clipboardWrite",
+      "nativeMessaging"
     ],
     "host_permissions": [
       "<all_urls>"

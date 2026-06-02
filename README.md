@@ -81,10 +81,99 @@ pnpm dev:extension
 - 支店番号、口座番号、カード番号、有効期限、カード名義は Secure Vault に学習し、popupからの手動実行時に入力できます
 - CVC/CVV/CID/セキュリティコードは将来利用のために保存せず、学習も自動入力もしません
 - 銀行/カード系の `field_learned_from_user` / `field_filled` / `field_corrected_by_user` イベントは、`previousValue` / `nextValue` を保存せず `values:redacted` だけ残します
-- PIN、パスワード、OTP、captcha、CSRF/token、合言葉/秘密の質問系は学習も自動入力もしません
+- API tokenは、ユーザーがpopupで明示作成したcopy-onlyのSecure Vault itemとして保存・更新・コピー・削除できます。token本体、サービスURL、アカウント、メモは暗号化値として保存し、`token` っぽいフォームフィールドからの自動学習・自動入力はしません
+- PIN、パスワード、OTP、captcha、CSRF token、合言葉/秘密の質問系は学習も自動入力もしません
 - Secure Vault は通常の `fieldMemory` と分離し、ローカルでは AES-GCM で暗号化して保存します。Google同期では暗号化済みのVault dataだけをD1へ保存し、Vault KeyはWorkerにもD1にも送信しません。Vault Keyは `chrome.storage.session` にだけ保持し、過去版の `chrome.storage.local` に残ったキーは起動時にsessionへ移してlocal側を空にします
+- API tokenのコピーはpopupの明示操作だけで実行し、manifestでは `clipboardWrite` を要求します。clipboardからの読み取りはしません
 - 別PCでは、Googleログイン後にSecure Vaultの回復フレーズを入力すると、D1上のVault Recovery PackageからVault Keyをこの端末へ復元できます。回復フレーズは拡張側で高エントロピー生成し、PBKDF2-SHA256 600k iterations + AES-GCM AADでVault Keyを包み、保存・送信しません
 - Secure Vaultには `vaultId`, `activeKeyId`, encrypted key-check canary を持たせ、復元時はVault Recovery Packageの `vaultId` とcanary検証に通ったVault Keyだけを端末sessionへ保存します
+
+#### Agent Vault for Codex / Claude Code
+
+Codex や Claude Code から開発用 API token を使う場合は、Rust CLI の `agvt` を使います。デフォルトの保存先は `.local/agent-vault.json` で、`.local/` はgit管理外です。token本体、service URL、account、account ID、notesは暗号化payloadに入り、`agvt ls` ではvault名・item名・kind・label・更新日時だけを出します。
+
+```bash
+export AGVT_PASSPHRASE="24文字以上のローカルpassphrase"
+pnpm agvt keychain set
+
+export CLOUDFLARE_API_TOKEN="<cloudflare-api-token>"
+export CLOUDFLARE_ACCOUNT_ID="<cloudflare-account-id>"
+pnpm agvt add cloudflare
+pnpm agvt run cloudflare -- npx wrangler whoami
+
+GITHUB_TOKEN=agvt://github/token pnpm agvt run -- gh auth status
+pnpm agvt read agvt://cloudflare/account-id
+pnpm agvt read agvt://cloudflare/token
+pnpm agvt inject .env.template
+```
+
+`cloudflare` と `github` はプリセットです。`pnpm agvt presets --json` で確認できます。`cloudflare` は `CLOUDFLARE_API_TOKEN` に加えて、保存済みなら `CLOUDFLARE_ACCOUNT_ID` も `run` で渡します。`agvt://cloudflare/token` のような短縮secret referenceは `agvt://dev/cloudflare/token` として扱います。カスタムtokenは `--from-stdin` か `--from-env TOKEN_ENV_NAME` を使い、tokenをコマンド引数に直接載せないでください。
+
+`AGVT_PASSPHRASE` が未設定の場合、macOSでは `agvt keychain set` で保存したpassphraseをKeychainから読みます。Keychainを使わない場合は `AGVT_KEYCHAIN=0` を付けます。
+
+```bash
+printf '%s' "$AGVT_PASSPHRASE" | pnpm agvt keychain set --from-stdin
+pnpm agvt keychain status
+unset AGVT_PASSPHRASE
+pnpm agvt ls
+```
+
+`run` は指定したsecretだけを子プロセスへ渡し、`AGVT_PASSPHRASE` と `AUTOFILL_AGENT_VAULT_PASSPHRASE` は子プロセス環境から外します。漏洩を減らしたい時は `--clean-env` と `--redact-output` を使います。macOSでは `--sandbox no-network` でネットワーク送信をベストエフォートで塞げます。
+
+```bash
+pnpm agvt run cloudflare --clean-env --redact-output -- npx wrangler whoami
+pnpm agvt run github --sandbox no-network -- gh auth status
+```
+
+Cloudflare tokenは、発行権限を持つfactory tokenとpolicy fileがあれば `agvt` から作成して、そのまま暗号化保存できます。policy bodyはCloudflare APIの `/user/tokens` 作成形式に合わせます。
+
+```bash
+export CLOUDFLARE_TOKEN_FACTORY_TOKEN="<token-create-capable-token>"
+pnpm agvt cloudflare create-token cloudflare \
+  --name "agvt cloudflare dev" \
+  --account-id "$CLOUDFLARE_ACCOUNT_ID" \
+  --policy-file docs/agvt-cloudflare-token-policy.example.json
+```
+
+API token以外のkindも保存できます。
+
+```bash
+pnpm agvt add github-totp --kind totp --from-env TOTP_SECRET --field issuer=GitHub --account nico
+pnpm agvt totp github-totp
+
+printf '%s' "$SSH_PRIVATE_KEY" | pnpm agvt add github-ssh --kind ssh-key --field-stdin private-key --field public-key="$SSH_PUBLIC_KEY"
+pnpm agvt read agvt://github-ssh/private-key
+```
+
+単体コマンドとして使う場合は以下で入れます。
+
+```bash
+pnpm install:agvt
+agvt add cloudflare
+agvt run cloudflare -- npx wrangler whoami
+```
+
+Chrome popupのAPI Token Vaultは、native hostを入れると保存時に同じtokenをAgent Vaultへも保存できます。popupの「Agent Vault item」に `cloudflare` などを入れて保存してください。host未インストール時はSecure Vault保存だけ続行します。
+
+```bash
+pnpm install:agvt
+pnpm install:agvt-native-host
+pnpm build:extension
+```
+
+CLIの実動作確認は以下です。
+
+```bash
+pnpm test:agvt
+```
+
+helpは英語/日本語を選べます。`AGVT_LANG=ja` を設定すると `agvt help` の既定表示を日本語にできます。
+
+```bash
+agvt help ja
+agvt help en
+AGVT_LANG=ja agvt help
+```
 
 #### 拡張IDを固定する
 

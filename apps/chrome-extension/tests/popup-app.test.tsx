@@ -5,7 +5,12 @@ import { DEFAULT_AUTOFILL_SETTINGS, PROFILE_KEYS, createEmptyProfile, type Event
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import PopupApp from "../lib/popup-app"
-import { createSecureVaultRecoveryPackage, type SecureVaultKey } from "../lib/secure-vault"
+import {
+  MANUAL_SECURE_VAULT_HOSTNAME,
+  createSecureVaultRecoveryPackage,
+  parseSecureVaultApiTokenItemPayload,
+  type SecureVaultKey
+} from "../lib/secure-vault"
 import { getStorageSnapshot } from "../lib/storage"
 import { createChromeMock } from "./helpers/mock-chrome"
 
@@ -38,6 +43,10 @@ const secondVaultKey: SecureVaultKey = {
 describe("PopupApp", () => {
   afterEach(() => {
     vi.unstubAllGlobals()
+    Object.defineProperty(globalThis.navigator, "clipboard", {
+      value: undefined,
+      configurable: true
+    })
   })
 
   it("migrates a legacy persisted Secure Vault key into session storage", async () => {
@@ -360,6 +369,152 @@ describe("PopupApp", () => {
       expect(mock.sessionStorageData.autofillSecureVaultKey).toEqual(vaultKey)
       expect(mock.storageData.autofillSecureVaultKey).toBeNull()
     })
+  })
+
+  it("saves manually entered API tokens into Secure Vault without storing plaintext locally", async () => {
+    const mock = createChromeMock({
+      autofillProfile: {
+        ...createEmptyProfile(),
+        fullName: "山田 太郎"
+      }
+    })
+    ;(globalThis as { chrome: typeof chrome }).chrome = mock.chromeMock as unknown as typeof chrome
+
+    render(createElement(PopupApp))
+
+    const user = userEvent.setup()
+    await user.type(await screen.findByLabelText("API token名"), "GitHub production")
+    await user.type(screen.getByLabelText("サービスURL"), "https://api.github.com")
+    await user.type(screen.getByLabelText("アカウント"), "deploy-bot")
+    await user.type(screen.getByLabelText("API token"), "ghp_test_secret")
+    await user.type(screen.getByLabelText("メモ"), "repo deploy scope")
+    await user.click(screen.getByRole("button", { name: "API tokenを保存" }))
+
+    await waitFor(async () => {
+      const snapshot = await getStorageSnapshot()
+      const [entry] = Object.values(snapshot.secureVault.entries).filter((candidate) => candidate.kind === "api-token")
+      expect(entry).toMatchObject({
+        hostname: MANUAL_SECURE_VAULT_HOSTNAME,
+        label: "GitHub production"
+      })
+      const [plaintext] = Object.values(snapshot.secureVaultValues)
+      expect(parseSecureVaultApiTokenItemPayload(plaintext)).toMatchObject({
+        token: "ghp_test_secret",
+        serviceUrl: "https://api.github.com",
+        accountName: "deploy-bot",
+        notes: "repo deploy scope"
+      })
+    })
+
+    expect(JSON.stringify(mock.storageData.autofillSecureVault)).not.toContain("ghp_test_secret")
+    expect(JSON.stringify(mock.storageData.autofillSecureVault)).not.toContain("https://api.github.com")
+    expect(JSON.stringify(mock.storageData.autofillSecureVault)).not.toContain("deploy-bot")
+    expect(mock.sessionStorageData.autofillSecureVaultKey).toBeTruthy()
+  })
+
+  it("copies and deletes saved API token vault items", async () => {
+    const writeText = vi.fn(async () => undefined)
+    const mock = createChromeMock({
+      autofillProfile: {
+        ...createEmptyProfile(),
+        fullName: "山田 太郎"
+      }
+    })
+    ;(globalThis as { chrome: typeof chrome }).chrome = mock.chromeMock as unknown as typeof chrome
+
+    render(createElement(PopupApp))
+
+    const user = userEvent.setup()
+    Object.defineProperty(globalThis.navigator, "clipboard", {
+      value: {
+        writeText
+      },
+      configurable: true
+    })
+    await user.type(await screen.findByLabelText("API token名"), "GitHub production")
+    await user.type(screen.getByLabelText("サービスURL"), "https://api.github.com")
+    await user.type(screen.getByLabelText("アカウント"), "deploy-bot")
+    await user.type(screen.getByLabelText("API token"), "ghp_test_secret")
+    await user.click(screen.getByRole("button", { name: "API tokenを保存" }))
+
+    expect(await screen.findByText("deploy-bot / https://api.github.com")).toBeTruthy()
+    const copyButton = screen.getByRole("button", { name: "コピー" }) as HTMLButtonElement
+    await waitFor(() => {
+      expect(copyButton.disabled).toBe(false)
+    })
+
+    await user.click(copyButton)
+    expect(writeText).toHaveBeenCalledWith("ghp_test_secret")
+
+    await user.click(screen.getByRole("button", { name: "削除" }))
+    await waitFor(async () => {
+      const snapshot = await getStorageSnapshot()
+      expect(Object.values(snapshot.secureVault.entries).filter((entry) => entry.kind === "api-token")).toHaveLength(0)
+    })
+    expect(screen.queryByText("GitHub production")).toBeNull()
+  })
+
+  it("edits saved API token vault items without creating duplicates", async () => {
+    const writeText = vi.fn(async () => undefined)
+    const mock = createChromeMock({
+      autofillProfile: {
+        ...createEmptyProfile(),
+        fullName: "山田 太郎"
+      }
+    })
+    ;(globalThis as { chrome: typeof chrome }).chrome = mock.chromeMock as unknown as typeof chrome
+
+    render(createElement(PopupApp))
+
+    const user = userEvent.setup()
+    Object.defineProperty(globalThis.navigator, "clipboard", {
+      value: {
+        writeText
+      },
+      configurable: true
+    })
+    await user.type(await screen.findByLabelText("API token名"), "GitHub production")
+    await user.type(screen.getByLabelText("サービスURL"), "https://api.github.com")
+    await user.type(screen.getByLabelText("アカウント"), "deploy-bot")
+    await user.type(screen.getByLabelText("API token"), "ghp_old_secret")
+    await user.type(screen.getByLabelText("メモ"), "old scope")
+    await user.click(screen.getByRole("button", { name: "API tokenを保存" }))
+
+    await user.click(await screen.findByRole("button", { name: "編集" }))
+    await user.clear(screen.getByLabelText("API token名"))
+    await user.type(screen.getByLabelText("API token名"), "GitHub staging")
+    await user.clear(screen.getByLabelText("サービスURL"))
+    await user.type(screen.getByLabelText("サービスURL"), "https://staging.example.test")
+    await user.clear(screen.getByLabelText("アカウント"))
+    await user.type(screen.getByLabelText("アカウント"), "staging-bot")
+    await user.clear(screen.getByLabelText("API token"))
+    await user.type(screen.getByLabelText("API token"), "ghp_new_secret")
+    await user.clear(screen.getByLabelText("メモ"))
+    await user.type(screen.getByLabelText("メモ"), "staging scope")
+    await user.click(screen.getByRole("button", { name: "API tokenを更新" }))
+
+    await waitFor(async () => {
+      const snapshot = await getStorageSnapshot()
+      const entries = Object.values(snapshot.secureVault.entries).filter((entry) => entry.kind === "api-token")
+      expect(entries).toHaveLength(1)
+      expect(entries[0]).toMatchObject({
+        label: "GitHub staging"
+      })
+      const [plaintext] = Object.values(snapshot.secureVaultValues)
+      expect(parseSecureVaultApiTokenItemPayload(plaintext)).toMatchObject({
+        token: "ghp_new_secret",
+        serviceUrl: "https://staging.example.test",
+        accountName: "staging-bot",
+        notes: "staging scope"
+      })
+    })
+
+    expect(JSON.stringify(mock.storageData.autofillSecureVault)).not.toContain("ghp_old_secret")
+    expect(JSON.stringify(mock.storageData.autofillSecureVault)).not.toContain("ghp_new_secret")
+    expect(JSON.stringify(mock.storageData.autofillSecureVault)).not.toContain("https://staging.example.test")
+
+    await user.click(screen.getByRole("button", { name: "コピー" }))
+    expect(writeText).toHaveBeenCalledWith("ghp_new_secret")
   })
 
   it("does not treat a leftover local vault key as usable for a different recovery package", async () => {

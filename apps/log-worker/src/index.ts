@@ -1886,7 +1886,7 @@ const privacyPolicyHtml = `<!doctype html>
   <body>
     <main>
       <h1>Autofill Browser Privacy Policy</h1>
-      <p class="muted">Effective date: May 23, 2026</p>
+      <p class="muted">Effective date: June 1, 2026</p>
 
       <h2>Purpose</h2>
       <p>
@@ -1901,13 +1901,14 @@ const privacyPolicyHtml = `<!doctype html>
         <li>Autofill settings, domain allow/block preferences, and remote autofill safety rules.</li>
         <li>Google sign-in account identifiers used for sync, such as Google subject ID, email address, display name, and picture URL.</li>
         <li>Autofill event data, such as hostname, URL, field signature, profile key, event type, timestamps, and field values when logging is enabled by the extension behavior.</li>
-        <li>Secure Vault data for reusable sensitive form values, such as bank branch or account details, stored as client-encrypted vault records.</li>
+        <li>Secure Vault data for reusable sensitive form values or explicitly saved API token items and their associated details, stored as client-encrypted vault records.</li>
       </ul>
 
       <h2>Data We Do Not Intentionally Store</h2>
       <p>
-        The extension is designed not to save or autofill passwords, one-time codes, verification codes,
-        captchas, CVV/CVC values, or equivalent authentication secrets.
+        The extension is designed not to learn or autofill passwords, one-time codes, verification codes,
+        captchas, CVV/CVC values, CSRF tokens, or token-like values captured from web forms. API tokens are
+        stored only when the user explicitly creates a copy-only Secure Vault item.
       </p>
 
       <h2>Storage and Security</h2>

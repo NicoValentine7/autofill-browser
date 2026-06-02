@@ -182,6 +182,8 @@ describe("autofill-engine", () => {
       <input id="auth-code" name="auth_code" />
       <label for="totp">TOTP</label>
       <input id="totp" name="totp" />
+      <label for="api-token">API token</label>
+      <input id="api-token" name="api_token" />
       <label for="sms-code">SMS code</label>
       <input id="sms-code" name="sms_code" />
       <label for="email">Email</label>
@@ -200,6 +202,7 @@ describe("autofill-engine", () => {
     expect(values).not.toHaveProperty("verification")
     expect(values).not.toHaveProperty("auth-code")
     expect(values).not.toHaveProperty("totp")
+    expect(values).not.toHaveProperty("api-token")
     expect(values).not.toHaveProperty("sms-code")
   })
 

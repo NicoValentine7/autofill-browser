@@ -3,19 +3,27 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react"
 import { createEmptyProfile, getDomainPolicy, isProfileConfigured, type DomainPolicy, type EventLogEntry, type StoredProfile } from "@autofill-browser/autofill-core"
 
 import { fetchRemoteRules, fetchSignedInUser, pullSyncedSnapshot, pushSyncedSnapshot, type SyncField } from "./account-sync"
+import { normalizeAgentVaultItemName, upsertAgentVaultApiToken } from "./agent-vault-native"
 import { clearGoogleAuthTokens, getGoogleAccessToken } from "./google-auth"
 import type { ExtensionMessage } from "./messages"
 import { sendMessageToTab } from "./messages"
 import {
   MIN_VAULT_RECOVERY_PASSPHRASE_LENGTH,
+  createManualSecureVaultValueUpdate,
   createSecureVaultRecoveryPackage,
   generateSecureVaultRecoveryPhrase,
-  recoverSecureVaultKey
+  getSecureVaultEntryKey,
+  isManualSecureVaultItem,
+  parseSecureVaultApiTokenItemPayload,
+  recoverSecureVaultKey,
+  stringifySecureVaultApiTokenItemPayload,
+  type SecureVaultEntry
 } from "./secure-vault"
 import {
   applySyncedSnapshot,
   appendEventEntries,
   clearGoogleAuthUser,
+  commitStorageChanges,
   getStorageSnapshot,
   saveAccountSyncState,
   saveDomainPolicy,
@@ -82,7 +90,10 @@ const eventTypeLabels: Record<EventLogEntry["type"], string> = {
   setting_changed: "設定変更",
   domain_policy_changed: "ドメイン制御変更",
   profile_updated: "プロフィール更新",
-  manual_autofill_triggered: "手動再実行"
+  manual_autofill_triggered: "手動再実行",
+  vault_item_created: "Vault項目を追加",
+  vault_item_updated: "Vault項目を更新",
+  vault_item_deleted: "Vault項目を削除"
 }
 
 const getActiveTabContext = async (): Promise<ActiveTabContext> => {
@@ -129,6 +140,15 @@ function PopupApp() {
   const [vaultRecoveryPassphrase, setVaultRecoveryPassphrase] = useState("")
   const [isGeneratedVaultRecoveryPassphrase, setIsGeneratedVaultRecoveryPassphrase] = useState(false)
   const [showVaultRecoveryPassphrase, setShowVaultRecoveryPassphrase] = useState(false)
+  const [apiTokenLabel, setApiTokenLabel] = useState("")
+  const [apiTokenServiceUrl, setApiTokenServiceUrl] = useState("")
+  const [apiTokenAccountName, setApiTokenAccountName] = useState("")
+  const [apiTokenAccountId, setApiTokenAccountId] = useState("")
+  const [apiTokenAgentVaultItem, setApiTokenAgentVaultItem] = useState("")
+  const [apiTokenValue, setApiTokenValue] = useState("")
+  const [apiTokenNotes, setApiTokenNotes] = useState("")
+  const [showApiTokenValue, setShowApiTokenValue] = useState(false)
+  const [editingApiTokenEntryKey, setEditingApiTokenEntryKey] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<ActiveTabContext>({ hostname: "", url: "" })
   const [status, setStatus] = useState("読み込み中やで")
 
@@ -264,6 +284,15 @@ function PopupApp() {
   )
   const shouldShowVaultRecovery =
     Boolean(snapshot.secureVaultKey) || Boolean(snapshot.secureVaultRecovery) || vaultEntryCount > 0
+  const apiTokenEntries = Object.entries(snapshot.secureVault.entries)
+    .filter(([, entry]) => isManualSecureVaultItem(entry) && entry.kind === "api-token")
+    .sort(([, left], [, right]) => right.updatedAt.localeCompare(left.updatedAt))
+  const apiTokenItems = apiTokenEntries.map(([entryKey, entry]) => ({
+    entryKey,
+    entry,
+    payload: parseSecureVaultApiTokenItemPayload(snapshot.secureVaultValues[entryKey])
+  }))
+  const editingApiTokenEntry = editingApiTokenEntryKey ? snapshot.secureVault.entries[editingApiTokenEntryKey] : undefined
 
   const handleProfileFieldChange = (key: keyof StoredProfile, value: string) => {
     setProfileForm((current) => ({
@@ -434,6 +463,161 @@ function PopupApp() {
     setStatus("Vault Keyをこの端末へ復元したで")
   }
 
+  const resetApiTokenForm = () => {
+    setApiTokenLabel("")
+    setApiTokenServiceUrl("")
+    setApiTokenAccountName("")
+    setApiTokenAccountId("")
+    setApiTokenAgentVaultItem("")
+    setApiTokenValue("")
+    setApiTokenNotes("")
+    setShowApiTokenValue(false)
+    setEditingApiTokenEntryKey(null)
+  }
+
+  const handleSaveApiToken = async () => {
+    const value = apiTokenValue.trim()
+    if (!value) {
+      setStatus("API tokenの値を入れてな")
+      return
+    }
+
+    const nextUpdate = editingApiTokenEntry
+      ? {
+          hostname: editingApiTokenEntry.hostname,
+          fieldSignature: editingApiTokenEntry.fieldSignature,
+          kind: "api-token" as const,
+          value: stringifySecureVaultApiTokenItemPayload({
+            token: value,
+            serviceUrl: apiTokenServiceUrl,
+            accountName: apiTokenAccountName,
+            accountId: apiTokenAccountId,
+            agentVaultItem: apiTokenAgentVaultItem,
+            notes: apiTokenNotes
+          }),
+          label: apiTokenLabel.trim() || editingApiTokenEntry.label || "API token"
+        }
+      : createManualSecureVaultValueUpdate({
+          kind: "api-token",
+          value: stringifySecureVaultApiTokenItemPayload({
+            token: value,
+            serviceUrl: apiTokenServiceUrl,
+            accountName: apiTokenAccountName,
+            accountId: apiTokenAccountId,
+            agentVaultItem: apiTokenAgentVaultItem,
+            notes: apiTokenNotes
+          }),
+          label: apiTokenLabel.trim() || "API token"
+        })
+
+    const nextSnapshot = await commitStorageChanges({
+      secureVaultUpdates: [nextUpdate],
+      eventEntries: [
+        {
+          type: editingApiTokenEntry ? "vault_item_updated" : "vault_item_created",
+          hostname: "",
+          url: "",
+          source: "popup-ui",
+          detail: "vault:api-token;values:redacted"
+        }
+      ]
+    })
+
+    setSnapshot(nextSnapshot)
+    resetApiTokenForm()
+    await pushSnapshotIfSignedIn(nextSnapshot, ["secureVault"])
+    const normalizedAgentVaultItem = normalizeAgentVaultItemName(apiTokenAgentVaultItem)
+    if (normalizedAgentVaultItem) {
+      const bridgeResult = await upsertAgentVaultApiToken({
+        item: normalizedAgentVaultItem,
+        token: value,
+        label: apiTokenLabel.trim() || "API token",
+        serviceUrl: apiTokenServiceUrl,
+        accountName: apiTokenAccountName,
+        accountId: apiTokenAccountId,
+        notes: apiTokenNotes
+      })
+      setStatus(
+        bridgeResult.ok
+          ? "API tokenをSecure VaultとAgent Vaultへ保存したで"
+          : `API tokenはSecure Vaultへ保存したで / Agent Vault bridgeは未接続やな`
+      )
+      return
+    }
+    setStatus(editingApiTokenEntry ? "API tokenを更新したで" : "API tokenをVaultに保存したで")
+  }
+
+  const handleEditApiToken = (entryKey: string, entry: SecureVaultEntry) => {
+    const payload = parseSecureVaultApiTokenItemPayload(snapshot.secureVaultValues[entryKey])
+    if (!payload?.token) {
+      setStatus("Vault Keyを復元してから編集してな")
+      return
+    }
+
+    setEditingApiTokenEntryKey(entryKey)
+    setApiTokenLabel(entry.label ?? "API token")
+    setApiTokenServiceUrl(payload.serviceUrl ?? "")
+    setApiTokenAccountName(payload.accountName ?? "")
+    setApiTokenAccountId(payload.accountId ?? "")
+    setApiTokenAgentVaultItem(payload.agentVaultItem ?? "")
+    setApiTokenValue(payload.token)
+    setApiTokenNotes(payload.notes ?? "")
+    setShowApiTokenValue(false)
+    setStatus(`${entry.label ?? "API token"} を編集中やで`)
+  }
+
+  const handleCopyApiToken = async (entryKey: string, entry: SecureVaultEntry) => {
+    if (!hasUsableVaultKey) {
+      setStatus("Vault Keyを復元してからコピーしてな")
+      return
+    }
+
+    const payload = parseSecureVaultApiTokenItemPayload(snapshot.secureVaultValues[entryKey])
+    if (!payload?.token) {
+      setStatus("このAPI tokenはこの端末では復号できへん")
+      return
+    }
+
+    try {
+      if (!navigator.clipboard?.writeText) {
+        setStatus("この環境ではクリップボードへコピーできへん")
+        return
+      }
+
+      await navigator.clipboard.writeText(payload.token)
+      setStatus(`${entry.label ?? "API token"} をコピーしたで`)
+    } catch (_error) {
+      setStatus("API tokenのコピーに失敗したで")
+    }
+  }
+
+  const handleDeleteApiToken = async (entry: SecureVaultEntry) => {
+    const nextSnapshot = await commitStorageChanges({
+      secureVaultDeletes: [
+        {
+          hostname: entry.hostname,
+          fieldSignature: entry.fieldSignature
+        }
+      ],
+      eventEntries: [
+        {
+          type: "vault_item_deleted",
+          hostname: "",
+          url: "",
+          source: "popup-ui",
+          detail: "vault:api-token;values:redacted"
+        }
+      ]
+    })
+
+    setSnapshot(nextSnapshot)
+    if (editingApiTokenEntryKey === getSecureVaultEntryKey(entry.hostname, entry.fieldSignature)) {
+      resetApiTokenForm()
+    }
+    await pushSnapshotIfSignedIn(nextSnapshot, ["secureVault"])
+    setStatus("API tokenを削除したで")
+  }
+
   return (
     <main
       style={{
@@ -583,6 +767,200 @@ function PopupApp() {
           </button>
         </section>
       ) : null}
+
+      <section style={sectionStyle}>
+        <h2 style={{ margin: "0 0 8px", fontSize: 14 }}>API Token Vault</h2>
+        <div style={{ display: "grid", gap: 8 }}>
+          {editingApiTokenEntry ? (
+            <p style={{ margin: 0, fontSize: 12, color: "#fde68a" }}>
+              {editingApiTokenEntry.label ?? "API token"} を編集中
+            </p>
+          ) : null}
+          <label style={{ display: "grid", gap: 4, fontSize: 12 }}>
+            <span>API token名</span>
+            <input
+              value={apiTokenLabel}
+              onChange={(event) => setApiTokenLabel(event.target.value)}
+              placeholder="例: GitHub production"
+              autoComplete="off"
+              style={inputStyle}
+            />
+          </label>
+          <label style={{ display: "grid", gap: 4, fontSize: 12 }}>
+            <span>サービスURL</span>
+            <input
+              value={apiTokenServiceUrl}
+              onChange={(event) => setApiTokenServiceUrl(event.target.value)}
+              placeholder="例: https://api.github.com"
+              autoComplete="off"
+              style={inputStyle}
+            />
+          </label>
+          <label style={{ display: "grid", gap: 4, fontSize: 12 }}>
+            <span>アカウント</span>
+            <input
+              value={apiTokenAccountName}
+              onChange={(event) => setApiTokenAccountName(event.target.value)}
+              placeholder="例: deploy-bot@example.com"
+              autoComplete="off"
+              style={inputStyle}
+            />
+          </label>
+          <label style={{ display: "grid", gap: 4, fontSize: 12 }}>
+            <span>Cloudflare Account ID</span>
+            <input
+              value={apiTokenAccountId}
+              onChange={(event) => setApiTokenAccountId(event.target.value)}
+              placeholder="例: 0123456789abcdef"
+              autoComplete="off"
+              style={inputStyle}
+            />
+          </label>
+          <label style={{ display: "grid", gap: 4, fontSize: 12 }}>
+            <span>Agent Vault item</span>
+            <input
+              value={apiTokenAgentVaultItem}
+              onChange={(event) => setApiTokenAgentVaultItem(normalizeAgentVaultItemName(event.target.value))}
+              placeholder="例: cloudflare"
+              autoComplete="off"
+              style={inputStyle}
+            />
+          </label>
+          <label style={{ display: "grid", gap: 4, fontSize: 12 }}>
+            <span>API token</span>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8 }}>
+              <input
+                type={showApiTokenValue ? "text" : "password"}
+                value={apiTokenValue}
+                onChange={(event) => setApiTokenValue(event.target.value)}
+                placeholder="手動で保存するtoken"
+                autoComplete="off"
+                style={inputStyle}
+              />
+              <button
+                type="button"
+                onClick={() => setShowApiTokenValue((current) => !current)}
+                style={{
+                  ...buttonStyle,
+                  padding: "8px 10px",
+                  background: "#bfdbfe",
+                }}>
+                {showApiTokenValue ? "隠す" : "表示"}
+              </button>
+            </div>
+          </label>
+          <label style={{ display: "grid", gap: 4, fontSize: 12 }}>
+            <span>メモ</span>
+            <textarea
+              value={apiTokenNotes}
+              onChange={(event) => setApiTokenNotes(event.target.value)}
+              placeholder="用途や権限スコープ"
+              rows={3}
+              autoComplete="off"
+              style={{
+                ...inputStyle,
+                resize: "vertical"
+              }}
+            />
+          </label>
+          <button
+            type="button"
+            onClick={handleSaveApiToken}
+            style={{
+              ...buttonStyle,
+              background: "#a7f3d0",
+            }}>
+            {editingApiTokenEntry ? "API tokenを更新" : "API tokenを保存"}
+          </button>
+          {editingApiTokenEntry ? (
+            <button
+              type="button"
+              onClick={resetApiTokenForm}
+              style={{
+                ...buttonStyle,
+                background: "#cbd5e1",
+              }}>
+              編集をやめる
+            </button>
+          ) : null}
+        </div>
+        {apiTokenItems.length > 0 ? (
+          <ul style={{ margin: "12px 0 0", padding: 0, display: "grid", gap: 8, listStyle: "none" }}>
+            {apiTokenItems.map(({ entryKey, entry, payload }) => (
+              <li
+                key={entryKey}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr auto auto auto",
+                  gap: 8,
+                  alignItems: "center",
+                  fontSize: 12
+                }}>
+                <div style={{ minWidth: 0, display: "grid", gap: 2 }}>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 700 }}>
+                    {entry.label ?? "API token"}
+                  </span>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#c7d0dd" }}>
+                    {payload
+                      ? [payload.accountName, payload.accountId, payload.serviceUrl].filter(Boolean).join(" / ") || "詳細なし"
+                      : "Vault Key復元後に詳細表示"}
+                  </span>
+                  {payload?.agentVaultItem ? (
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#99f6e4" }}>
+                      agvt://{payload.agentVaultItem}/token
+                    </span>
+                  ) : null}
+                  {payload?.notes ? (
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#94a3b8" }}>
+                      {payload.notes}
+                    </span>
+                  ) : null}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleEditApiToken(entryKey, entry)}
+                  disabled={!payload}
+                  style={{
+                    ...buttonStyle,
+                    padding: "7px 9px",
+                    background: payload ? "#bfdbfe" : "#475569",
+                    color: payload ? "#10131a" : "#cbd5e1",
+                    cursor: payload ? "pointer" : "not-allowed"
+                  }}>
+                  編集
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void handleCopyApiToken(entryKey, entry)
+                  }}
+                  disabled={!hasUsableVaultKey}
+                  style={{
+                    ...buttonStyle,
+                    padding: "7px 9px",
+                    background: hasUsableVaultKey ? "#fde68a" : "#475569",
+                    color: hasUsableVaultKey ? "#10131a" : "#cbd5e1",
+                    cursor: hasUsableVaultKey ? "pointer" : "not-allowed"
+                  }}>
+                  コピー
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void handleDeleteApiToken(entry)
+                  }}
+                  style={{
+                    ...buttonStyle,
+                    padding: "7px 9px",
+                    background: "#fecaca",
+                  }}>
+                  削除
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </section>
 
       <section style={sectionStyle}>
         <h2 style={{ margin: "0 0 8px", fontSize: 14 }}>このサイト</h2>

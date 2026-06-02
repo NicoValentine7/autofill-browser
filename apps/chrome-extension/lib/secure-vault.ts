@@ -7,7 +7,13 @@ import {
   type FieldSecurityClassification
 } from "./field-security"
 
-export type SecureVaultEntryKind = "bank-account" | "payment-card" | "card-security-code" | "auth-identifier" | "custom"
+export type SecureVaultEntryKind =
+  | "bank-account"
+  | "payment-card"
+  | "card-security-code"
+  | "auth-identifier"
+  | "api-token"
+  | "custom"
 
 export type SecureVaultEncryptedValue = {
   schemaVersion: 1
@@ -74,6 +80,22 @@ export type SecureVaultValueUpdate = {
   incrementAutofilled?: boolean
   incrementCorrected?: boolean
   incrementLearned?: boolean
+}
+
+export type SecureVaultValueDelete = {
+  hostname: string
+  fieldSignature: string
+}
+
+export type SecureVaultApiTokenItemPayload = {
+  schemaVersion: 1
+  kind: "api-token"
+  token: string
+  serviceUrl?: string
+  accountName?: string
+  accountId?: string
+  agentVaultItem?: string
+  notes?: string
 }
 
 const RECOVERY_KEY_ITERATIONS = 600_000
@@ -178,6 +200,72 @@ const encodeRecoveryAdditionalData = (
 const createSecureVaultId = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `vault-${Date.now()}-${Math.random()}`
 
+export const MANUAL_SECURE_VAULT_HOSTNAME = "__manual_vault__"
+
+export const createManualSecureVaultValueUpdate = ({
+  kind,
+  value,
+  label
+}: {
+  kind: SecureVaultEntryKind
+  value: string
+  label?: string
+}): SecureVaultValueUpdate => ({
+  hostname: MANUAL_SECURE_VAULT_HOSTNAME,
+  fieldSignature: `manual:${kind}:${createSecureVaultId()}`,
+  kind,
+  value,
+  label
+})
+
+export const isManualSecureVaultItem = (entry: Pick<SecureVaultEntry, "hostname" | "fieldSignature">) =>
+  entry.hostname === MANUAL_SECURE_VAULT_HOSTNAME && entry.fieldSignature.startsWith("manual:")
+
+export const stringifySecureVaultApiTokenItemPayload = (
+  payload: Omit<SecureVaultApiTokenItemPayload, "schemaVersion" | "kind">
+) =>
+  JSON.stringify({
+    schemaVersion: 1,
+    kind: "api-token",
+    token: payload.token.trim(),
+    ...(payload.serviceUrl?.trim() ? { serviceUrl: payload.serviceUrl.trim() } : {}),
+    ...(payload.accountName?.trim() ? { accountName: payload.accountName.trim() } : {}),
+    ...(payload.accountId?.trim() ? { accountId: payload.accountId.trim() } : {}),
+    ...(payload.agentVaultItem?.trim() ? { agentVaultItem: payload.agentVaultItem.trim() } : {}),
+    ...(payload.notes?.trim() ? { notes: payload.notes.trim() } : {})
+  } satisfies SecureVaultApiTokenItemPayload)
+
+export const parseSecureVaultApiTokenItemPayload = (value?: string): SecureVaultApiTokenItemPayload | null => {
+  const trimmed = value?.trim()
+  if (!trimmed) {
+    return null
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as Partial<SecureVaultApiTokenItemPayload>
+    if (parsed.schemaVersion === 1 && parsed.kind === "api-token" && parsed.token?.trim()) {
+      return {
+        schemaVersion: 1,
+        kind: "api-token",
+        token: parsed.token.trim(),
+        ...(parsed.serviceUrl?.trim() ? { serviceUrl: parsed.serviceUrl.trim() } : {}),
+        ...(parsed.accountName?.trim() ? { accountName: parsed.accountName.trim() } : {}),
+        ...(parsed.accountId?.trim() ? { accountId: parsed.accountId.trim() } : {}),
+        ...(parsed.agentVaultItem?.trim() ? { agentVaultItem: parsed.agentVaultItem.trim() } : {}),
+        ...(parsed.notes?.trim() ? { notes: parsed.notes.trim() } : {})
+      }
+    }
+  } catch (_error) {
+    return {
+      schemaVersion: 1,
+      kind: "api-token",
+      token: trimmed
+    }
+  }
+
+  return null
+}
+
 export const createSecureVaultKey = (): SecureVaultKey => {
   const rawKey = new Uint8Array(32)
   getCrypto().getRandomValues(rawKey)
@@ -277,6 +365,7 @@ const normalizeEntryKind = (value: unknown): SecureVaultEntryKind =>
   value === "payment-card" ||
   value === "card-security-code" ||
   value === "auth-identifier" ||
+  value === "api-token" ||
   value === "custom"
     ? value
     : "custom"
@@ -599,5 +688,16 @@ export const upsertSecureVaultValue = async (
         updatedAt: now
       }
     }
+  }
+}
+
+export const deleteSecureVaultValue = (vault: SecureVaultState, deletion: SecureVaultValueDelete): SecureVaultState => {
+  const normalizedVault = normalizeSecureVaultState(vault)
+  const entryKey = getSecureVaultEntryKey(deletion.hostname, deletion.fieldSignature)
+  const { [entryKey]: _deletedEntry, ...entries } = normalizedVault.entries
+
+  return {
+    ...normalizedVault,
+    entries
   }
 }

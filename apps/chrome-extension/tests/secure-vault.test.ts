@@ -2,12 +2,16 @@ import { describe, expect, it } from "vitest"
 
 import {
   createEmptySecureVault,
+  createManualSecureVaultValueUpdate,
   createSecureVaultRecoveryPackage,
   decryptSecureVaultValues,
   ensureSecureVaultKeyCheck,
   generateSecureVaultRecoveryPhrase,
+  MANUAL_SECURE_VAULT_HOSTNAME,
+  parseSecureVaultApiTokenItemPayload,
   recoverSecureVaultKey,
   MIN_VAULT_RECOVERY_PASSPHRASE_LENGTH,
+  stringifySecureVaultApiTokenItemPayload,
   upsertSecureVaultValue,
   validateSecureVaultKey,
   type SecureVaultKey
@@ -105,5 +109,37 @@ describe("secure-vault recovery", () => {
     expect(recoveryPhrase).toHaveLength(43)
     expect(recoveryPhrase.length).toBeGreaterThanOrEqual(MIN_VAULT_RECOVERY_PASSPHRASE_LENGTH)
     expect(recoveryPhrase).toMatch(/^[A-Za-z0-9_-]+$/)
+  })
+
+  it("stores manually created API tokens as copy-only vault items", async () => {
+    const update = createManualSecureVaultValueUpdate({
+      kind: "api-token",
+      label: "GitHub production",
+      value: stringifySecureVaultApiTokenItemPayload({
+        token: "ghp_test_secret",
+        serviceUrl: "https://api.github.com",
+        accountName: "deploy-bot",
+        notes: "repo deploy scope"
+      })
+    })
+    const vault = await upsertSecureVaultValue(createEmptySecureVault(), vaultKey, update)
+    const [entry] = Object.values(vault.entries)
+
+    expect(entry).toMatchObject({
+      hostname: MANUAL_SECURE_VAULT_HOSTNAME,
+      kind: "api-token",
+      label: "GitHub production"
+    })
+    expect(entry.fieldSignature).toMatch(/^manual:api-token:/)
+    expect(JSON.stringify(vault)).not.toContain("ghp_test_secret")
+    expect(JSON.stringify(vault)).not.toContain("https://api.github.com")
+
+    const [plaintext] = Object.values(await decryptSecureVaultValues(vault, vaultKey))
+    expect(parseSecureVaultApiTokenItemPayload(plaintext)).toMatchObject({
+      token: "ghp_test_secret",
+      serviceUrl: "https://api.github.com",
+      accountName: "deploy-bot",
+      notes: "repo deploy scope"
+    })
   })
 })
