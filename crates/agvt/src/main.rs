@@ -23,7 +23,8 @@ use reference::{
 use vault::{
     canonical_payload_field, default_vault_path, delete_item, list_items, read_secret_field,
     require_passphrase_for_path, upsert_api_token, upsert_secret, validate_item_kind,
-    UpsertSecretInput, UpsertTokenInput, AGVT_PASSPHRASE_ENV, LEGACY_PASSPHRASE_ENV,
+    validate_passphrase_value, UpsertSecretInput, UpsertTokenInput, AGVT_PASSPHRASE_ENV,
+    LEGACY_PASSPHRASE_ENV,
 };
 
 #[derive(Debug)]
@@ -750,7 +751,8 @@ fn handle_keychain(options: &GlobalOptions) -> Result<()> {
                         )
                     })?
             };
-            let target = keychain::store_passphrase(&options.vault_path, passphrase.trim())?;
+            let passphrase = validate_passphrase_value(&passphrase, "Keychain passphrase")?;
+            let target = keychain::store_passphrase(&options.vault_path, &passphrase)?;
             println!(
                 "stored passphrase in macOS Keychain service={} account={}",
                 target.service, target.account
