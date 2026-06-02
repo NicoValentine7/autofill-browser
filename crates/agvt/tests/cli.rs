@@ -39,6 +39,24 @@ fn prints_japanese_and_english_help() {
 }
 
 #[test]
+fn keychain_set_rejects_short_passphrase_before_storing() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_agvt"))
+        .arg("--vault-path")
+        .arg(vault_path)
+        .args(["keychain", "set"])
+        .env("AGVT_PASSPHRASE", "short")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("Keychain passphrase must be at least 24 characters."));
+}
+
+#[test]
 fn cloudflare_preset_round_trip_and_run() {
     let directory = tempfile::tempdir().unwrap();
     let vault_path = directory.path().join("agent-vault.json");

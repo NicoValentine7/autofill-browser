@@ -361,7 +361,7 @@ fn create_vault(passphrase: &str) -> Result<VaultFile> {
     Ok(vault)
 }
 
-fn validate_passphrase_value(value: &str, source: &str) -> Result<String> {
+pub fn validate_passphrase_value(value: &str, source: &str) -> Result<String> {
     let trimmed = value.trim().to_owned();
     if trimmed.len() < 24 {
         return Err(AgvtError::new(format!(
