@@ -11,6 +11,34 @@ fn agvt_command(vault_path: &std::path::Path) -> Command {
 }
 
 #[test]
+fn prints_japanese_and_english_help() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+
+    let ja_output = agvt_command(&vault_path)
+        .args(["help", "ja"])
+        .output()
+        .unwrap();
+    assert!(
+        ja_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ja_output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&ja_output.stdout).contains("よく使う流れ"));
+
+    let en_output = agvt_command(&vault_path)
+        .args(["help", "en"])
+        .output()
+        .unwrap();
+    assert!(
+        en_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&en_output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&en_output.stdout).contains("Common flows"));
+}
+
+#[test]
 fn cloudflare_preset_round_trip_and_run() {
     let directory = tempfile::tempdir().unwrap();
     let vault_path = directory.path().join("agent-vault.json");

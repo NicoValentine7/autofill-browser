@@ -161,6 +161,14 @@ CLIの実動作確認は以下です。
 pnpm test:agvt
 ```
 
+helpは英語/日本語を選べます。`AGVT_LANG=ja` を設定すると `agvt help` の既定表示を日本語にできます。
+
+```bash
+agvt help ja
+agvt help en
+AGVT_LANG=ja agvt help
+```
+
 #### 拡張IDを固定する
 
 manifest `key` の公開鍵は `apps/chrome-extension/package.json` に入れてあるため、別PCでも clone して build するだけで同じ拡張IDになります。これは「unpackedで読み込むローカル版」のための固定IDです。秘密鍵のコピーは不要です。

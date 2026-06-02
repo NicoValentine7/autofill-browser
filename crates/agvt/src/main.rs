@@ -1,5 +1,6 @@
 mod cloudflare;
 mod error;
+mod help;
 mod keychain;
 mod presets;
 mod reference;
@@ -24,31 +25,6 @@ use vault::{
     require_passphrase_for_path, upsert_api_token, upsert_secret, validate_item_kind,
     UpsertSecretInput, UpsertTokenInput, AGVT_PASSPHRASE_ENV, LEGACY_PASSPHRASE_ENV,
 };
-
-const USAGE: &str = r#"Usage:
-  agvt add cloudflare
-  agvt add <item-or-ref> [--kind KIND] [--from-stdin | --from-env ENV] [--label TEXT] [--service-url URL] [--account TEXT] [--account-id ID] [--notes TEXT]
-  agvt add <item-or-ref> --kind <login|totp|ssh-key|custom> [--field NAME=VALUE | --field-env NAME=ENV | --field-stdin NAME]
-  agvt read <agvt://vault/item/field | item> [field]
-  agvt run [preset] [--env ENV=ref] [--clean-env] [--redact-output] [--sandbox no-network] -- <command> [args...]
-  agvt inject [template-file|-]
-  agvt totp <item-or-ref> [--digits 6|7|8] [--period SECONDS]
-  agvt keychain set [--from-stdin | --from-env ENV]
-  agvt keychain status
-  agvt keychain delete
-  agvt cloudflare create-token <item> --name TEXT --policy-file FILE [--factory-token-env ENV | --factory-token-ref ref] [--account-id ID] [--expires-on RFC3339]
-  agvt ls [--json]
-  agvt delete <item-or-ref>
-  agvt presets [--json]
-
-Secret refs:
-  agvt://dev/cloudflare/token
-  agvt://cloudflare/token       # defaults to dev vault
-
-Environment:
-  AGVT_PASSPHRASE, AGVT_PATH, AGVT_KEYCHAIN
-  AUTOFILL_AGENT_VAULT_PASSPHRASE and AUTOFILL_AGENT_VAULT_PATH are still accepted.
-"#;
 
 #[derive(Debug)]
 struct GlobalOptions {
@@ -97,7 +73,7 @@ fn run() -> Result<()> {
     let options = parse_global_options(env::args().skip(1).collect())?;
     match options.command.as_str() {
         "help" | "--help" | "-h" => {
-            print!("{USAGE}");
+            print!("{}", help::help_text(&options.args)?);
             Ok(())
         }
         "add" | "put" => handle_add(&options),
