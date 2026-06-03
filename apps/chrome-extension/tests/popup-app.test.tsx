@@ -412,6 +412,52 @@ describe("PopupApp", () => {
     expect(mock.sessionStorageData.autofillSecureVaultKey).toBeTruthy()
   })
 
+  it("sends API tokens to the selected Agent Vault scope", async () => {
+    const mock = createChromeMock({
+      autofillProfile: {
+        ...createEmptyProfile(),
+        fullName: "山田 太郎"
+      }
+    })
+    const sendNativeMessage = vi.fn((_host: string, _message: unknown, callback?: (response: unknown) => void) => {
+      callback?.({ ok: true, message: "saved agvt://global/cloudflare/token" })
+    })
+    ;(mock.chromeMock.runtime as typeof chrome.runtime).sendNativeMessage =
+      sendNativeMessage as unknown as typeof chrome.runtime.sendNativeMessage
+    ;(globalThis as { chrome: typeof chrome }).chrome = mock.chromeMock as unknown as typeof chrome
+
+    render(createElement(PopupApp))
+
+    const user = userEvent.setup()
+    await user.type(await screen.findByLabelText("API token名"), "Cloudflare production")
+    await user.type(screen.getByLabelText("Cloudflare Account ID"), "cloudflare_account_id")
+    await user.selectOptions(screen.getByLabelText("Agent Vault scope"), "global")
+    await user.type(screen.getByLabelText("Agent Vault item"), "cloudflare")
+    await user.type(screen.getByLabelText("API token"), "cf_test_secret")
+    await user.click(screen.getByRole("button", { name: "API tokenを保存" }))
+
+    await waitFor(async () => {
+      expect(sendNativeMessage).toHaveBeenCalled()
+      const snapshot = await getStorageSnapshot()
+      const [plaintext] = Object.values(snapshot.secureVaultValues)
+      expect(parseSecureVaultApiTokenItemPayload(plaintext)).toMatchObject({
+        token: "cf_test_secret",
+        accountId: "cloudflare_account_id",
+        agentVaultItem: "cloudflare",
+        agentVaultScope: "global"
+      })
+    })
+    expect(sendNativeMessage.mock.calls[0]?.[0]).toBe("io.nico.agvt")
+    expect(sendNativeMessage.mock.calls[0]?.[1]).toMatchObject({
+      type: "upsert-api-token",
+      item: "cloudflare",
+      vault: "global",
+      token: "cf_test_secret",
+      accountId: "cloudflare_account_id"
+    })
+    expect(await screen.findByText("agvt://global/cloudflare/token")).toBeTruthy()
+  })
+
   it("copies and deletes saved API token vault items", async () => {
     const writeText = vi.fn(async () => undefined)
     const mock = createChromeMock({

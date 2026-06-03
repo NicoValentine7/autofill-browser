@@ -1,7 +1,10 @@
+import { DEFAULT_AGENT_VAULT_SCOPE, normalizeAgentVaultScope, type AgentVaultScope } from "./secure-vault"
+
 const AGENT_VAULT_NATIVE_HOST = "io.nico.agvt"
 
 export type AgentVaultUpsertApiTokenInput = {
   item: string
+  vault?: AgentVaultScope
   token: string
   label?: string
   serviceUrl?: string
@@ -25,8 +28,11 @@ export const normalizeAgentVaultItemName = (value: string) => {
   return /^[a-z0-9]/.test(normalized) ? normalized : ""
 }
 
+export const buildAgentVaultSecretRef = (vault: AgentVaultScope, item: string) => `agvt://${vault}/${item}/token`
+
 export const upsertAgentVaultApiToken = async (input: AgentVaultUpsertApiTokenInput): Promise<AgentVaultNativeResult> => {
   const item = normalizeAgentVaultItemName(input.item)
+  const vault = normalizeAgentVaultScope(input.vault ?? DEFAULT_AGENT_VAULT_SCOPE)
   if (!item || !input.token.trim()) {
     return { ok: false, message: "Agent Vault item名かtokenが空やで" }
   }
@@ -41,6 +47,7 @@ export const upsertAgentVaultApiToken = async (input: AgentVaultUpsertApiTokenIn
       {
         type: "upsert-api-token",
         item,
+        vault,
         token: input.token,
         label: input.label,
         serviceUrl: input.serviceUrl,

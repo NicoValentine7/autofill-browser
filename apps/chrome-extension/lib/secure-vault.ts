@@ -87,6 +87,8 @@ export type SecureVaultValueDelete = {
   fieldSignature: string
 }
 
+export type AgentVaultScope = "repo" | "global"
+
 export type SecureVaultApiTokenItemPayload = {
   schemaVersion: 1
   kind: "api-token"
@@ -95,6 +97,7 @@ export type SecureVaultApiTokenItemPayload = {
   accountName?: string
   accountId?: string
   agentVaultItem?: string
+  agentVaultScope?: AgentVaultScope
   notes?: string
 }
 
@@ -221,19 +224,26 @@ export const createManualSecureVaultValueUpdate = ({
 export const isManualSecureVaultItem = (entry: Pick<SecureVaultEntry, "hostname" | "fieldSignature">) =>
   entry.hostname === MANUAL_SECURE_VAULT_HOSTNAME && entry.fieldSignature.startsWith("manual:")
 
+export const DEFAULT_AGENT_VAULT_SCOPE: AgentVaultScope = "repo"
+
+export const normalizeAgentVaultScope = (value?: string | null): AgentVaultScope =>
+  value?.trim().toLowerCase() === "global" ? "global" : DEFAULT_AGENT_VAULT_SCOPE
+
 export const stringifySecureVaultApiTokenItemPayload = (
   payload: Omit<SecureVaultApiTokenItemPayload, "schemaVersion" | "kind">
-) =>
-  JSON.stringify({
+) => {
+  const agentVaultItem = payload.agentVaultItem?.trim()
+  return JSON.stringify({
     schemaVersion: 1,
     kind: "api-token",
     token: payload.token.trim(),
     ...(payload.serviceUrl?.trim() ? { serviceUrl: payload.serviceUrl.trim() } : {}),
     ...(payload.accountName?.trim() ? { accountName: payload.accountName.trim() } : {}),
     ...(payload.accountId?.trim() ? { accountId: payload.accountId.trim() } : {}),
-    ...(payload.agentVaultItem?.trim() ? { agentVaultItem: payload.agentVaultItem.trim() } : {}),
+    ...(agentVaultItem ? { agentVaultItem, agentVaultScope: normalizeAgentVaultScope(payload.agentVaultScope) } : {}),
     ...(payload.notes?.trim() ? { notes: payload.notes.trim() } : {})
   } satisfies SecureVaultApiTokenItemPayload)
+}
 
 export const parseSecureVaultApiTokenItemPayload = (value?: string): SecureVaultApiTokenItemPayload | null => {
   const trimmed = value?.trim()
@@ -244,6 +254,7 @@ export const parseSecureVaultApiTokenItemPayload = (value?: string): SecureVault
   try {
     const parsed = JSON.parse(trimmed) as Partial<SecureVaultApiTokenItemPayload>
     if (parsed.schemaVersion === 1 && parsed.kind === "api-token" && parsed.token?.trim()) {
+      const agentVaultItem = parsed.agentVaultItem?.trim()
       return {
         schemaVersion: 1,
         kind: "api-token",
@@ -251,7 +262,7 @@ export const parseSecureVaultApiTokenItemPayload = (value?: string): SecureVault
         ...(parsed.serviceUrl?.trim() ? { serviceUrl: parsed.serviceUrl.trim() } : {}),
         ...(parsed.accountName?.trim() ? { accountName: parsed.accountName.trim() } : {}),
         ...(parsed.accountId?.trim() ? { accountId: parsed.accountId.trim() } : {}),
-        ...(parsed.agentVaultItem?.trim() ? { agentVaultItem: parsed.agentVaultItem.trim() } : {}),
+        ...(agentVaultItem ? { agentVaultItem, agentVaultScope: normalizeAgentVaultScope(parsed.agentVaultScope) } : {}),
         ...(parsed.notes?.trim() ? { notes: parsed.notes.trim() } : {})
       }
     }

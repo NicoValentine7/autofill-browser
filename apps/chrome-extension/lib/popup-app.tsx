@@ -3,20 +3,23 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react"
 import { createEmptyProfile, getDomainPolicy, isProfileConfigured, type DomainPolicy, type EventLogEntry, type StoredProfile } from "@autofill-browser/autofill-core"
 
 import { fetchRemoteRules, fetchSignedInUser, pullSyncedSnapshot, pushSyncedSnapshot, type SyncField } from "./account-sync"
-import { normalizeAgentVaultItemName, upsertAgentVaultApiToken } from "./agent-vault-native"
+import { buildAgentVaultSecretRef, normalizeAgentVaultItemName, upsertAgentVaultApiToken } from "./agent-vault-native"
 import { clearGoogleAuthTokens, getGoogleAccessToken } from "./google-auth"
 import type { ExtensionMessage } from "./messages"
 import { sendMessageToTab } from "./messages"
 import {
   MIN_VAULT_RECOVERY_PASSPHRASE_LENGTH,
+  DEFAULT_AGENT_VAULT_SCOPE,
   createManualSecureVaultValueUpdate,
   createSecureVaultRecoveryPackage,
   generateSecureVaultRecoveryPhrase,
   getSecureVaultEntryKey,
   isManualSecureVaultItem,
+  normalizeAgentVaultScope,
   parseSecureVaultApiTokenItemPayload,
   recoverSecureVaultKey,
   stringifySecureVaultApiTokenItemPayload,
+  type AgentVaultScope,
   type SecureVaultEntry
 } from "./secure-vault"
 import {
@@ -145,6 +148,7 @@ function PopupApp() {
   const [apiTokenAccountName, setApiTokenAccountName] = useState("")
   const [apiTokenAccountId, setApiTokenAccountId] = useState("")
   const [apiTokenAgentVaultItem, setApiTokenAgentVaultItem] = useState("")
+  const [apiTokenAgentVaultScope, setApiTokenAgentVaultScope] = useState<AgentVaultScope>(DEFAULT_AGENT_VAULT_SCOPE)
   const [apiTokenValue, setApiTokenValue] = useState("")
   const [apiTokenNotes, setApiTokenNotes] = useState("")
   const [showApiTokenValue, setShowApiTokenValue] = useState(false)
@@ -469,6 +473,7 @@ function PopupApp() {
     setApiTokenAccountName("")
     setApiTokenAccountId("")
     setApiTokenAgentVaultItem("")
+    setApiTokenAgentVaultScope(DEFAULT_AGENT_VAULT_SCOPE)
     setApiTokenValue("")
     setApiTokenNotes("")
     setShowApiTokenValue(false)
@@ -493,6 +498,7 @@ function PopupApp() {
             accountName: apiTokenAccountName,
             accountId: apiTokenAccountId,
             agentVaultItem: apiTokenAgentVaultItem,
+            agentVaultScope: apiTokenAgentVaultScope,
             notes: apiTokenNotes
           }),
           label: apiTokenLabel.trim() || editingApiTokenEntry.label || "API token"
@@ -505,6 +511,7 @@ function PopupApp() {
             accountName: apiTokenAccountName,
             accountId: apiTokenAccountId,
             agentVaultItem: apiTokenAgentVaultItem,
+            agentVaultScope: apiTokenAgentVaultScope,
             notes: apiTokenNotes
           }),
           label: apiTokenLabel.trim() || "API token"
@@ -530,6 +537,7 @@ function PopupApp() {
     if (normalizedAgentVaultItem) {
       const bridgeResult = await upsertAgentVaultApiToken({
         item: normalizedAgentVaultItem,
+        vault: apiTokenAgentVaultScope,
         token: value,
         label: apiTokenLabel.trim() || "API token",
         serviceUrl: apiTokenServiceUrl,
@@ -560,6 +568,7 @@ function PopupApp() {
     setApiTokenAccountName(payload.accountName ?? "")
     setApiTokenAccountId(payload.accountId ?? "")
     setApiTokenAgentVaultItem(payload.agentVaultItem ?? "")
+    setApiTokenAgentVaultScope(normalizeAgentVaultScope(payload.agentVaultScope))
     setApiTokenValue(payload.token)
     setApiTokenNotes(payload.notes ?? "")
     setShowApiTokenValue(false)
@@ -816,16 +825,28 @@ function PopupApp() {
               style={inputStyle}
             />
           </label>
-          <label style={{ display: "grid", gap: 4, fontSize: 12 }}>
-            <span>Agent Vault item</span>
-            <input
-              value={apiTokenAgentVaultItem}
-              onChange={(event) => setApiTokenAgentVaultItem(normalizeAgentVaultItemName(event.target.value))}
-              placeholder="例: cloudflare"
-              autoComplete="off"
-              style={inputStyle}
-            />
-          </label>
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 0.8fr) minmax(0, 1.2fr)", gap: 8 }}>
+            <label style={{ display: "grid", gap: 4, fontSize: 12 }}>
+              <span>Agent Vault scope</span>
+              <select
+                value={apiTokenAgentVaultScope}
+                onChange={(event) => setApiTokenAgentVaultScope(normalizeAgentVaultScope(event.target.value))}
+                style={inputStyle}>
+                <option value="repo">repo-local</option>
+                <option value="global">global</option>
+              </select>
+            </label>
+            <label style={{ display: "grid", gap: 4, fontSize: 12 }}>
+              <span>Agent Vault item</span>
+              <input
+                value={apiTokenAgentVaultItem}
+                onChange={(event) => setApiTokenAgentVaultItem(normalizeAgentVaultItemName(event.target.value))}
+                placeholder="例: cloudflare"
+                autoComplete="off"
+                style={inputStyle}
+              />
+            </label>
+          </div>
           <label style={{ display: "grid", gap: 4, fontSize: 12 }}>
             <span>API token</span>
             <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8 }}>
@@ -907,7 +928,7 @@ function PopupApp() {
                   </span>
                   {payload?.agentVaultItem ? (
                     <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#99f6e4" }}>
-                      agvt://{payload.agentVaultItem}/token
+                      {buildAgentVaultSecretRef(normalizeAgentVaultScope(payload.agentVaultScope), payload.agentVaultItem)}
                     </span>
                   ) : null}
                   {payload?.notes ? (
