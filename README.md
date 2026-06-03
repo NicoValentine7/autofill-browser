@@ -101,13 +101,17 @@ export CLOUDFLARE_ACCOUNT_ID="<cloudflare-account-id>"
 pnpm agvt add cloudflare
 pnpm agvt run cloudflare -- npx wrangler whoami
 
+export OPENAI_API_KEY="<openai-api-key>"
+pnpm agvt add openai
+pnpm agvt run openai -- sh -c 'test -n "$OPENAI_API_KEY"'
+
 GITHUB_TOKEN=agvt://github/token pnpm agvt run -- gh auth status
 pnpm agvt read agvt://cloudflare/account-id
 pnpm agvt read agvt://cloudflare/token
 pnpm agvt inject --redact-output .env.template
 ```
 
-`cloudflare` と `github` はプリセットです。`pnpm agvt presets --json` で確認できます。`cloudflare` は `CLOUDFLARE_API_TOKEN` に加えて、保存済みなら `CLOUDFLARE_ACCOUNT_ID` も `run` で渡します。`agvt://cloudflare/token` のような短縮secret referenceは `agvt://dev/cloudflare/token` として扱います。カスタムtokenは `--from-stdin` か `--from-env TOKEN_ENV_NAME` を使い、tokenをコマンド引数に直接載せないでください。
+`cloudflare`、`openai`、`anthropic`、`vercel`、`stripe`、`slack`、`github` はプリセットです。`pnpm agvt presets --json` で確認できます。`cloudflare` は `CLOUDFLARE_API_TOKEN` に加えて、保存済みなら `CLOUDFLARE_ACCOUNT_ID` も `run` で渡します。その他のprovider presetは既存tokenを保存・注入するだけで、token作成・更新・検証・権限探索はしません。`agvt://cloudflare/token` のような短縮secret referenceは `agvt://dev/cloudflare/token` として扱います。カスタムtokenは `--from-stdin` か `--from-env TOKEN_ENV_NAME` を使い、tokenをコマンド引数に直接載せないでください。
 
 `add` / `delete` はVault file単位のlockを取り、同じVaultへ複数の `agvt` processが同時に書き込んでもlast-write-winsでitemを失わないようにします。`inject` はsecret値を標準出力へ展開するため、確認だけなら `--redact-output` を使ってください。
 
@@ -127,7 +131,7 @@ pnpm agvt run cloudflare --clean-env --redact-output -- npx wrangler whoami
 pnpm agvt run github --sandbox no-network -- gh auth status
 ```
 
-Cloudflare tokenは、発行権限を持つfactory tokenとpolicy fileがあれば `agvt` から作成して、そのまま暗号化保存できます。policy bodyはCloudflare APIの `/user/tokens` 作成形式に合わせます。
+Cloudflare tokenは、発行権限を持つfactory tokenとpolicy fileがあれば `agvt` から作成して、そのまま暗号化保存できます。policy bodyはCloudflare APIの `/user/tokens` 作成形式に合わせます。自動発行はCloudflare専用の明示フローとして維持し、OpenAI、Anthropic、Vercel、Stripe、Slack、GitHubでは既存tokenの保存と注入だけを扱います。
 
 ```bash
 export CLOUDFLARE_TOKEN_FACTORY_TOKEN="<token-create-capable-token>"

@@ -34,6 +34,61 @@ pub const PRESETS: &[Preset] = &[
         ],
     },
     Preset {
+        name: "openai",
+        env_name: "OPENAI_API_KEY",
+        label: "OpenAI",
+        service_url: "https://api.openai.com/v1",
+        fields: &[PresetField {
+            env_name: "OPENAI_API_KEY",
+            field: "token",
+            required: true,
+        }],
+    },
+    Preset {
+        name: "anthropic",
+        env_name: "ANTHROPIC_API_KEY",
+        label: "Anthropic",
+        service_url: "https://api.anthropic.com",
+        fields: &[PresetField {
+            env_name: "ANTHROPIC_API_KEY",
+            field: "token",
+            required: true,
+        }],
+    },
+    Preset {
+        name: "vercel",
+        env_name: "VERCEL_TOKEN",
+        label: "Vercel",
+        service_url: "https://api.vercel.com",
+        fields: &[PresetField {
+            env_name: "VERCEL_TOKEN",
+            field: "token",
+            required: true,
+        }],
+    },
+    Preset {
+        name: "stripe",
+        env_name: "STRIPE_API_KEY",
+        label: "Stripe",
+        service_url: "https://api.stripe.com",
+        fields: &[PresetField {
+            env_name: "STRIPE_API_KEY",
+            field: "token",
+            required: true,
+        }],
+    },
+    Preset {
+        name: "slack",
+        env_name: "SLACK_BOT_TOKEN",
+        label: "Slack",
+        service_url: "https://slack.com/api",
+        fields: &[PresetField {
+            env_name: "SLACK_BOT_TOKEN",
+            field: "token",
+            required: true,
+        }],
+    },
+    Preset {
         name: "github",
         env_name: "GITHUB_TOKEN",
         label: "GitHub",

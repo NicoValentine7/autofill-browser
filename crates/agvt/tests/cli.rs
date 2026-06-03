@@ -2,6 +2,8 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use serde_json::Value;
+
 fn agvt_command(vault_path: &std::path::Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_agvt"));
     command
@@ -26,6 +28,8 @@ fn prints_japanese_and_english_help() {
         String::from_utf8_lossy(&ja_output.stderr)
     );
     assert!(String::from_utf8_lossy(&ja_output.stdout).contains("よく使う流れ"));
+    assert!(String::from_utf8_lossy(&ja_output.stdout).contains("openai, anthropic, vercel"));
+    assert!(String::from_utf8_lossy(&ja_output.stdout).contains("token自動発行はCloudflare専用"));
 
     let en_output = agvt_command(&vault_path)
         .args(["help", "en"])
@@ -37,6 +41,9 @@ fn prints_japanese_and_english_help() {
         String::from_utf8_lossy(&en_output.stderr)
     );
     assert!(String::from_utf8_lossy(&en_output.stdout).contains("Common flows"));
+    assert!(String::from_utf8_lossy(&en_output.stdout).contains("openai, anthropic, vercel"));
+    assert!(String::from_utf8_lossy(&en_output.stdout)
+        .contains("Automatic token creation is Cloudflare-only"));
 }
 
 #[test]
@@ -136,6 +143,93 @@ fn cloudflare_preset_round_trip_and_run() {
         String::from_utf8_lossy(&run_output.stdout),
         "cloudflare_dummy_secret|cloudflare_account_id|"
     );
+}
+
+#[test]
+fn provider_presets_round_trip_and_run() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+    let providers = [
+        ("openai", "OPENAI_API_KEY", "openai_dummy_secret"),
+        ("anthropic", "ANTHROPIC_API_KEY", "anthropic_dummy_secret"),
+        ("vercel", "VERCEL_TOKEN", "vercel_dummy_secret"),
+        ("stripe", "STRIPE_API_KEY", "stripe_dummy_secret"),
+        ("slack", "SLACK_BOT_TOKEN", "slack_dummy_secret"),
+    ];
+
+    for (preset, env_name, secret) in providers {
+        let add_output = agvt_command(&vault_path)
+            .args(["add", preset])
+            .env(env_name, secret)
+            .output()
+            .unwrap();
+        assert!(
+            add_output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&add_output.stderr)
+        );
+
+        let raw_vault = fs::read_to_string(&vault_path).unwrap();
+        assert!(!raw_vault.contains(secret));
+
+        let read_ref = format!("agvt://{preset}/token");
+        let read_output = agvt_command(&vault_path)
+            .args(["read", &read_ref])
+            .output()
+            .unwrap();
+        assert!(
+            read_output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&read_output.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&read_output.stdout).trim(), secret);
+
+        let print_env = format!("printf '%s' \"${env_name}\"");
+        let run_output = agvt_command(&vault_path)
+            .args(["run", preset, "--", "sh", "-c", &print_env])
+            .output()
+            .unwrap();
+        assert!(
+            run_output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&run_output.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&run_output.stdout), secret);
+    }
+}
+
+#[test]
+fn presets_json_lists_provider_presets() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+
+    let output = agvt_command(&vault_path)
+        .args(["presets", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let parsed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let presets = parsed["presets"].as_array().unwrap();
+    for (name, env_name) in [
+        ("cloudflare", "CLOUDFLARE_API_TOKEN"),
+        ("openai", "OPENAI_API_KEY"),
+        ("anthropic", "ANTHROPIC_API_KEY"),
+        ("vercel", "VERCEL_TOKEN"),
+        ("stripe", "STRIPE_API_KEY"),
+        ("slack", "SLACK_BOT_TOKEN"),
+        ("github", "GITHUB_TOKEN"),
+    ] {
+        let preset = presets
+            .iter()
+            .find(|preset| preset["name"] == name)
+            .unwrap_or_else(|| panic!("missing preset: {name}"));
+        assert_eq!(preset["envName"], env_name);
+    }
 }
 
 #[test]

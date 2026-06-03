@@ -11,6 +11,9 @@ Common flows:
   agvt add cloudflare
       Save CLOUDFLARE_API_TOKEN and optional CLOUDFLARE_ACCOUNT_ID.
 
+  agvt add openai
+      Save OPENAI_API_KEY for later command injection.
+
   agvt run cloudflare -- npx wrangler whoami
       Run a command with Cloudflare env vars injected.
 
@@ -34,7 +37,8 @@ Commands:
 
   agvt run [preset] [--env ENV=ref] [safety options] -- <command> [args...]
       Inject selected secrets into a child process.
-      Presets: cloudflare, github. Custom: --env TOKEN=agvt://item/token.
+      Presets: cloudflare, openai, anthropic, vercel, stripe, slack, github.
+      Custom: --env TOKEN=agvt://item/token.
       Safety: --clean-env --redact-output --sandbox no-network.
 
   agvt inject [--redact-output] [template-file|-]
@@ -46,6 +50,7 @@ Commands:
 
   agvt cloudflare create-token <item> --name TEXT --policy-file FILE [options]
       Create a Cloudflare API token and save it without printing the token.
+      Automatic token creation is Cloudflare-only; other presets store existing tokens.
       Factory token: --factory-token-env ENV, --factory-token-ref ref,
       CLOUDFLARE_TOKEN_FACTORY_TOKEN, or CLOUDFLARE_API_TOKEN.
 
@@ -86,6 +91,9 @@ const HELP_JA: &str = r#"agvt - Agent Vault CLI
   agvt add cloudflare
       CLOUDFLARE_API_TOKEN と、任意で CLOUDFLARE_ACCOUNT_ID を保存する
 
+  agvt add openai
+      OPENAI_API_KEY を保存して、あとでコマンドに注入できるようにする
+
   agvt run cloudflare -- npx wrangler whoami
       Cloudflare用の環境変数を注入してコマンドを実行する
 
@@ -109,7 +117,8 @@ const HELP_JA: &str = r#"agvt - Agent Vault CLI
 
   agvt run [preset] [--env ENV=ref] [safety options] -- <command> [args...]
       選んだsecretだけを子プロセスへ渡す
-      preset: cloudflare, github。custom: --env TOKEN=agvt://item/token
+      preset: cloudflare, openai, anthropic, vercel, stripe, slack, github
+      custom: --env TOKEN=agvt://item/token
       safety: --clean-env --redact-output --sandbox no-network
 
   agvt inject [--redact-output] [template-file|-]
@@ -121,6 +130,7 @@ const HELP_JA: &str = r#"agvt - Agent Vault CLI
 
   agvt cloudflare create-token <item> --name TEXT --policy-file FILE [options]
       Cloudflare API tokenを作成して、token値を表示せずに保存する
+      token自動発行はCloudflare専用。他presetは既存tokenの保存・注入のみ
       factory token: --factory-token-env ENV、--factory-token-ref ref、
       CLOUDFLARE_TOKEN_FACTORY_TOKEN、または CLOUDFLARE_API_TOKEN
 
