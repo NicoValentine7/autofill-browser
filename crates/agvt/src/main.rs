@@ -2,6 +2,7 @@ mod cloudflare;
 mod error;
 mod help;
 mod keychain;
+mod prepare;
 mod presets;
 mod reference;
 mod totp;
@@ -16,6 +17,7 @@ use std::process::{Command, Stdio};
 
 use cloudflare::{create_user_token, load_policy_file, CreateTokenInput};
 use error::{AgvtError, Result};
+use prepare::handle_prepare;
 use presets::{find_preset, PRESETS};
 use reference::{
     find_secret_refs, item_target_to_ref, parse_secret_ref, validate_env_name, DEFAULT_VAULT_NAME,
@@ -29,11 +31,11 @@ use vault::{
 };
 
 #[derive(Debug)]
-struct GlobalOptions {
-    vault_path: PathBuf,
-    default_vault: String,
+pub(crate) struct GlobalOptions {
+    pub(crate) vault_path: PathBuf,
+    pub(crate) default_vault: String,
     command: String,
-    args: Vec<String>,
+    pub(crate) args: Vec<String>,
 }
 
 #[derive(Default)]
@@ -83,6 +85,7 @@ fn run() -> Result<()> {
         "run" => handle_run(&options),
         "inject" => handle_inject(&options),
         "import-env" => handle_import_env(&options),
+        "prepare" => handle_prepare(&options),
         "totp" => handle_totp(&options),
         "keychain" => handle_keychain(&options),
         "cloudflare" => handle_cloudflare(&options),
@@ -130,7 +133,7 @@ fn parse_global_options(mut args: Vec<String>) -> Result<GlobalOptions> {
     })
 }
 
-fn take_value(args: &[String], index: usize, option: &str) -> Result<String> {
+pub(crate) fn take_value(args: &[String], index: usize, option: &str) -> Result<String> {
     args.get(index + 1)
         .filter(|value| !value.starts_with("--"))
         .cloned()
@@ -681,23 +684,23 @@ fn redact_text(value: &str, redactions: &[String]) -> String {
 }
 
 #[derive(Default)]
-struct ImportEnvOptions {
+pub(crate) struct ImportEnvOptions {
     presets: Vec<String>,
-    env_files: Vec<String>,
+    pub(crate) env_files: Vec<String>,
     dry_run: bool,
     as_json: bool,
     preset_only: bool,
-    no_env_file: bool,
+    pub(crate) no_env_file: bool,
 }
 
-struct ImportCandidate {
-    item: String,
-    label: String,
+pub(crate) struct ImportCandidate {
+    pub(crate) item: String,
+    pub(crate) label: String,
     service_url: Option<String>,
     token: String,
     account_id: Option<String>,
-    source_envs: Vec<String>,
-    source_kind: &'static str,
+    pub(crate) source_envs: Vec<String>,
+    pub(crate) source_kind: &'static str,
 }
 
 fn handle_import_env(options: &GlobalOptions) -> Result<()> {
@@ -781,7 +784,9 @@ fn parse_import_env_options(args: &[String]) -> Result<ImportEnvOptions> {
     Ok(options)
 }
 
-fn load_import_env_source(options: &ImportEnvOptions) -> Result<BTreeMap<String, String>> {
+pub(crate) fn load_import_env_source(
+    options: &ImportEnvOptions,
+) -> Result<BTreeMap<String, String>> {
     let mut source_env: BTreeMap<String, String> = env::vars()
         .filter(|(_key, value)| !value.trim().is_empty())
         .collect();
@@ -831,7 +836,7 @@ fn load_dotenv_file(path: &str, source_env: &mut BTreeMap<String, String>) -> Re
     Ok(())
 }
 
-fn import_env_candidates(
+pub(crate) fn import_env_candidates(
     source_env: &BTreeMap<String, String>,
     options: &ImportEnvOptions,
 ) -> Result<Vec<ImportCandidate>> {
@@ -900,7 +905,7 @@ fn import_env_candidates(
     Ok(candidates)
 }
 
-fn selected_import_presets(names: &[String]) -> Result<Vec<&'static presets::Preset>> {
+pub(crate) fn selected_import_presets(names: &[String]) -> Result<Vec<&'static presets::Preset>> {
     if names.is_empty() {
         return Ok(PRESETS.iter().collect());
     }

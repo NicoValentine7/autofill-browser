@@ -107,6 +107,7 @@ pnpm agvt run openai -- sh -c 'test -n "$OPENAI_API_KEY"'
 
 pnpm agvt import-env --dry-run
 pnpm agvt import-env
+pnpm agvt prepare --dry-run
 
 GITHUB_TOKEN=agvt://github/token pnpm agvt run -- gh auth status
 pnpm agvt read agvt://cloudflare/account-id
@@ -117,6 +118,19 @@ pnpm agvt inject --redact-output .env.template
 `cloudflare`、`openai`、`anthropic`、`vercel`、`stripe`、`slack`、`github` はプリセットです。`pnpm agvt presets --json` で確認できます。`cloudflare` は `CLOUDFLARE_API_TOKEN` に加えて、保存済みなら `CLOUDFLARE_ACCOUNT_ID` も `run` で渡します。その他のprovider presetは既存tokenを保存・注入するだけで、token作成・更新・検証・権限探索はしません。`agvt://cloudflare/token` のような短縮secret referenceは `agvt://dev/cloudflare/token` として扱います。カスタムtokenは `--from-stdin` か `--from-env TOKEN_ENV_NAME` を使い、tokenをコマンド引数に直接載せないでください。
 
 `import-env` は、現在の環境変数と、存在する `.env.local` / `.env.development` / `.env.production` / `.env` から、プリセットやsecretっぽい名前の値をVaultへ取り込みます。値は表示しません。まず `--dry-run` で取り込み候補のenv名だけを確認できます。custom importでは `*_TOKEN`、`*_API_KEY`、`*_SECRET`、`*_SECRET_KEY`、`*_SERVICE_ROLE_KEY`、`*_PASSWORD`、`DATABASE_URL` を拾い、`NEXT_PUBLIC_*` / `PUBLIC_*` は除外します。custom importを避けたい場合は `--preset-only` を使います。
+
+`prepare` は、repoで必要なsecretがVaultにあるかを診断するdry-run中心の入口です。`agvt.toml` があれば `[prepare] presets = ["cloudflare"]` と `[[prepare.secrets]]` を読み、なければ `wrangler` など既知のrepo hintや `.env.*` のenv名から候補を出します。Vaultへの保存、`.env` の書き換え、Cloudflare token自動発行はしません。出力は `present` / `importable` / `missing` / `unchecked` とenv名・次のコマンドだけで、secret値は表示しません。
+
+```toml
+[prepare]
+presets = ["cloudflare"]
+
+[[prepare.secrets]]
+item = "admin-secret"
+field = "token"
+env = "ADMIN_SECRET"
+required = true
+```
 
 `add` / `delete` はVault file単位のlockを取り、同じVaultへ複数の `agvt` processが同時に書き込んでもlast-write-winsでitemを失わないようにします。`inject` はsecret値を標準出力へ展開するため、確認だけなら `--redact-output` を使ってください。
 

@@ -17,6 +17,9 @@ Common flows:
   agvt import-env --dry-run
       Preview importable preset and secret-like env vars without printing values.
 
+  agvt prepare --dry-run
+      Diagnose required repo secrets without saving, creating, or printing values.
+
   agvt run cloudflare -- npx wrangler whoami
       Run a command with Cloudflare env vars injected.
 
@@ -56,6 +59,11 @@ Commands:
       such as *_TOKEN, *_API_KEY, *_SECRET, *_SECRET_KEY,
       *_SERVICE_ROLE_KEY, *_PASSWORD, and DATABASE_URL are imported as custom
       api-token items unless --preset-only is set.
+
+  agvt prepare [preset...] [--dry-run] [--manifest FILE] [--env-file FILE] [--json]
+      Diagnose repo secret readiness without mutating the vault.
+      Reads agvt.toml when present, otherwise detects known repo/provider hints.
+      Output lists present, importable, missing, or unchecked fields only.
 
   agvt totp <item-or-ref> [--digits 6|7|8] [--period SECONDS]
       Generate a TOTP code from a totp item.
@@ -109,6 +117,9 @@ const HELP_JA: &str = r#"agvt - Agent Vault CLI
   agvt import-env --dry-run
       importできるpreset/env名だけを見る。secret値は表示しない
 
+  agvt prepare --dry-run
+      repoに必要なsecretを、保存・発行・値表示なしで診断する
+
   agvt run cloudflare -- npx wrangler whoami
       Cloudflare用の環境変数を注入してコマンドを実行する
 
@@ -148,6 +159,11 @@ const HELP_JA: &str = r#"agvt - Agent Vault CLI
       *_API_KEY、*_SECRET、*_SECRET_KEY、*_SERVICE_ROLE_KEY、*_PASSWORD、
       DATABASE_URL はcustom api-tokenとして保存する
       custom importを避ける場合は --preset-only を使う
+
+  agvt prepare [preset...] [--dry-run] [--manifest FILE] [--env-file FILE] [--json]
+      Vaultを書き換えずにrepoのsecret readinessを診断する
+      agvt.toml があれば読み、なければ既知のrepo/provider hintを見る
+      出力は present、importable、missing、unchecked のfield名だけ
 
   agvt totp <item-or-ref> [--digits 6|7|8] [--period SECONDS]
       totp itemから現在のTOTP codeを生成する
