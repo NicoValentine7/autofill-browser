@@ -2,6 +2,8 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use serde_json::Value;
+
 fn agvt_command(vault_path: &std::path::Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_agvt"));
     command
@@ -26,6 +28,8 @@ fn prints_japanese_and_english_help() {
         String::from_utf8_lossy(&ja_output.stderr)
     );
     assert!(String::from_utf8_lossy(&ja_output.stdout).contains("よく使う流れ"));
+    assert!(String::from_utf8_lossy(&ja_output.stdout).contains("openai, anthropic, vercel"));
+    assert!(String::from_utf8_lossy(&ja_output.stdout).contains("token自動発行はCloudflare専用"));
 
     let en_output = agvt_command(&vault_path)
         .args(["help", "en"])
@@ -37,6 +41,9 @@ fn prints_japanese_and_english_help() {
         String::from_utf8_lossy(&en_output.stderr)
     );
     assert!(String::from_utf8_lossy(&en_output.stdout).contains("Common flows"));
+    assert!(String::from_utf8_lossy(&en_output.stdout).contains("openai, anthropic, vercel"));
+    assert!(String::from_utf8_lossy(&en_output.stdout)
+        .contains("Automatic token creation is Cloudflare-only"));
 }
 
 #[test]
@@ -135,6 +142,217 @@ fn cloudflare_preset_round_trip_and_run() {
     assert_eq!(
         String::from_utf8_lossy(&run_output.stdout),
         "cloudflare_dummy_secret|cloudflare_account_id|"
+    );
+}
+
+#[test]
+fn provider_presets_round_trip_and_run() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+    let providers = [
+        ("openai", "OPENAI_API_KEY", "openai_dummy_secret"),
+        ("anthropic", "ANTHROPIC_API_KEY", "anthropic_dummy_secret"),
+        ("vercel", "VERCEL_TOKEN", "vercel_dummy_secret"),
+        ("stripe", "STRIPE_API_KEY", "stripe_dummy_secret"),
+        ("slack", "SLACK_BOT_TOKEN", "slack_dummy_secret"),
+    ];
+
+    for (preset, env_name, secret) in providers {
+        let add_output = agvt_command(&vault_path)
+            .args(["add", preset])
+            .env(env_name, secret)
+            .output()
+            .unwrap();
+        assert!(
+            add_output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&add_output.stderr)
+        );
+
+        let raw_vault = fs::read_to_string(&vault_path).unwrap();
+        assert!(!raw_vault.contains(secret));
+
+        let read_ref = format!("agvt://{preset}/token");
+        let read_output = agvt_command(&vault_path)
+            .args(["read", &read_ref])
+            .output()
+            .unwrap();
+        assert!(
+            read_output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&read_output.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&read_output.stdout).trim(), secret);
+
+        let print_env = format!("printf '%s' \"${env_name}\"");
+        let run_output = agvt_command(&vault_path)
+            .args(["run", preset, "--", "sh", "-c", &print_env])
+            .output()
+            .unwrap();
+        assert!(
+            run_output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&run_output.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&run_output.stdout), secret);
+    }
+}
+
+#[test]
+fn presets_json_lists_provider_presets() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+
+    let output = agvt_command(&vault_path)
+        .args(["presets", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let parsed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let presets = parsed["presets"].as_array().unwrap();
+    for (name, env_name) in [
+        ("cloudflare", "CLOUDFLARE_API_TOKEN"),
+        ("openai", "OPENAI_API_KEY"),
+        ("anthropic", "ANTHROPIC_API_KEY"),
+        ("vercel", "VERCEL_TOKEN"),
+        ("stripe", "STRIPE_API_KEY"),
+        ("slack", "SLACK_BOT_TOKEN"),
+        ("github", "GITHUB_TOKEN"),
+    ] {
+        let preset = presets
+            .iter()
+            .find(|preset| preset["name"] == name)
+            .unwrap_or_else(|| panic!("missing preset: {name}"));
+        assert_eq!(preset["envName"], env_name);
+    }
+}
+
+#[test]
+fn import_env_dry_run_reads_local_env_without_printing_values() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+    fs::write(
+        directory.path().join(".env.local"),
+        [
+            "OPENAI_API_KEY=openai_dummy_secret",
+            "STRIPE_SECRET_KEY=stripe_dummy_secret",
+            "DATABASE_URL=postgres://dummy_secret@localhost/app",
+            "NEXT_PUBLIC_SUPABASE_ANON_KEY=public_value",
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_agvt"))
+        .arg("--vault-path")
+        .arg(&vault_path)
+        .args(["import-env", "--dry-run"])
+        .current_dir(directory.path())
+        .env_clear()
+        .env("AGVT_PASSPHRASE", "test-passphrase-with-enough-length")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("would import openai\tpreset\tOPENAI_API_KEY"));
+    assert!(stdout.contains("would import stripe-secret-key\tcustom\tSTRIPE_SECRET_KEY"));
+    assert!(stdout.contains("would import database-url\tcustom\tDATABASE_URL"));
+    assert!(!stdout.contains("openai_dummy_secret"));
+    assert!(!stdout.contains("stripe_dummy_secret"));
+    assert!(!stdout.contains("public_value"));
+    assert!(!vault_path.exists());
+}
+
+#[test]
+fn import_env_saves_preset_and_custom_values() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+    fs::write(
+        directory.path().join(".env.local"),
+        [
+            "CLOUDFLARE_API_TOKEN=cloudflare_dummy_secret",
+            "CLOUDFLARE_ACCOUNT_ID=cloudflare_account_id",
+            "ADMIN_SECRET=admin_dummy_secret",
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_agvt"))
+        .arg("--vault-path")
+        .arg(&vault_path)
+        .args(["import-env"])
+        .current_dir(directory.path())
+        .env_clear()
+        .env("AGVT_PASSPHRASE", "test-passphrase-with-enough-length")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("imported cloudflare\tpreset\tCLOUDFLARE_API_TOKEN,CLOUDFLARE_ACCOUNT_ID")
+    );
+    assert!(stdout.contains("imported admin-secret\tcustom\tADMIN_SECRET"));
+
+    let raw_vault = fs::read_to_string(&vault_path).unwrap();
+    assert!(!raw_vault.contains("cloudflare_dummy_secret"));
+    assert!(!raw_vault.contains("cloudflare_account_id"));
+    assert!(!raw_vault.contains("admin_dummy_secret"));
+
+    let token_output = agvt_command(&vault_path)
+        .args(["read", "agvt://cloudflare/token"])
+        .output()
+        .unwrap();
+    assert!(
+        token_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&token_output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&token_output.stdout).trim(),
+        "cloudflare_dummy_secret"
+    );
+
+    let account_output = agvt_command(&vault_path)
+        .args(["read", "agvt://cloudflare/account-id"])
+        .output()
+        .unwrap();
+    assert!(
+        account_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&account_output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&account_output.stdout).trim(),
+        "cloudflare_account_id"
+    );
+
+    let custom_output = agvt_command(&vault_path)
+        .args(["read", "agvt://admin-secret/token"])
+        .output()
+        .unwrap();
+    assert!(
+        custom_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&custom_output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&custom_output.stdout).trim(),
+        "admin_dummy_secret"
     );
 }
 

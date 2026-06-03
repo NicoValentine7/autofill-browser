@@ -9,6 +9,7 @@ mod vault;
 
 use std::collections::BTreeMap;
 use std::env;
+use std::fs;
 use std::io::{self, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -81,6 +82,7 @@ fn run() -> Result<()> {
         "read" | "get" => handle_read(&options),
         "run" => handle_run(&options),
         "inject" => handle_inject(&options),
+        "import-env" => handle_import_env(&options),
         "totp" => handle_totp(&options),
         "keychain" => handle_keychain(&options),
         "cloudflare" => handle_cloudflare(&options),
@@ -676,6 +678,302 @@ fn redact_text(value: &str, redactions: &[String]) -> String {
         }
     }
     output
+}
+
+#[derive(Default)]
+struct ImportEnvOptions {
+    presets: Vec<String>,
+    env_files: Vec<String>,
+    dry_run: bool,
+    as_json: bool,
+    preset_only: bool,
+    no_env_file: bool,
+}
+
+struct ImportCandidate {
+    item: String,
+    label: String,
+    service_url: Option<String>,
+    token: String,
+    account_id: Option<String>,
+    source_envs: Vec<String>,
+    source_kind: &'static str,
+}
+
+fn handle_import_env(options: &GlobalOptions) -> Result<()> {
+    let import_options = parse_import_env_options(&options.args)?;
+    let source_env = load_import_env_source(&import_options)?;
+    let candidates = import_env_candidates(&source_env, &import_options)?;
+
+    if import_options.dry_run {
+        print_import_env_summary(&candidates, true, import_options.as_json)?;
+        return Ok(());
+    }
+
+    if candidates.is_empty() {
+        print_import_env_summary(&candidates, false, import_options.as_json)?;
+        return Ok(());
+    }
+
+    let passphrase = require_passphrase_for_path(&options.vault_path)?;
+    for candidate in &candidates {
+        let secret_ref = item_target_to_ref(&candidate.item, &options.default_vault, "token")?;
+        upsert_api_token(
+            &options.vault_path,
+            &passphrase,
+            UpsertTokenInput {
+                secret_ref,
+                token: candidate.token.clone(),
+                label: Some(candidate.label.clone()),
+                service_url: candidate.service_url.clone(),
+                account_name: None,
+                account_id: candidate.account_id.clone(),
+                token_id: None,
+                expires_on: None,
+                notes: Some(format!(
+                    "imported-by=agvt import-env;source-envs={}",
+                    candidate.source_envs.join(",")
+                )),
+            },
+        )?;
+    }
+    print_import_env_summary(&candidates, false, import_options.as_json)
+}
+
+fn parse_import_env_options(args: &[String]) -> Result<ImportEnvOptions> {
+    let mut options = ImportEnvOptions::default();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--env-file" => {
+                options
+                    .env_files
+                    .push(take_value(args, index, "--env-file")?);
+                index += 2;
+            }
+            "--dry-run" => {
+                options.dry_run = true;
+                index += 1;
+            }
+            "--json" => {
+                options.as_json = true;
+                index += 1;
+            }
+            "--preset-only" => {
+                options.preset_only = true;
+                index += 1;
+            }
+            "--no-env-file" => {
+                options.no_env_file = true;
+                index += 1;
+            }
+            value if value.starts_with("--") => {
+                return Err(AgvtError::new(format!(
+                    "unknown import-env option: {value}"
+                )))
+            }
+            value => {
+                options.presets.push(value.to_owned());
+                index += 1;
+            }
+        }
+    }
+    Ok(options)
+}
+
+fn load_import_env_source(options: &ImportEnvOptions) -> Result<BTreeMap<String, String>> {
+    let mut source_env: BTreeMap<String, String> = env::vars()
+        .filter(|(_key, value)| !value.trim().is_empty())
+        .collect();
+
+    let env_files = if options.env_files.is_empty() && !options.no_env_file {
+        default_import_env_files()
+    } else {
+        options.env_files.clone()
+    };
+    for env_file in env_files {
+        load_dotenv_file(&env_file, &mut source_env)?;
+    }
+    Ok(source_env)
+}
+
+fn default_import_env_files() -> Vec<String> {
+    [".env.local", ".env.development", ".env.production", ".env"]
+        .iter()
+        .filter(|path| Path::new(path).is_file())
+        .map(|path| (*path).to_owned())
+        .collect()
+}
+
+fn load_dotenv_file(path: &str, source_env: &mut BTreeMap<String, String>) -> Result<()> {
+    let content = fs::read_to_string(path)?;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let assignment = trimmed.strip_prefix("export ").unwrap_or(trimmed);
+        let Some((raw_name, raw_value)) = assignment.split_once('=') else {
+            continue;
+        };
+        let name = validate_env_name(raw_name.trim())?;
+        let mut value = raw_value.trim().to_owned();
+        if value.len() >= 2 {
+            let quote = value.as_bytes()[0] as char;
+            if matches!(quote, '"' | '\'') && value.ends_with(quote) {
+                value = value[1..value.len() - 1].to_owned();
+            }
+        }
+        if !value.trim().is_empty() {
+            source_env.insert(name, value);
+        }
+    }
+    Ok(())
+}
+
+fn import_env_candidates(
+    source_env: &BTreeMap<String, String>,
+    options: &ImportEnvOptions,
+) -> Result<Vec<ImportCandidate>> {
+    let selected_presets = selected_import_presets(&options.presets)?;
+    let mut consumed_envs = Vec::new();
+    let mut candidates = Vec::new();
+
+    for preset in selected_presets {
+        let mut source_envs = Vec::new();
+        let mut account_id = None;
+        let mut token = None;
+        let mut missing_required = false;
+
+        for field in preset.fields {
+            match source_env.get(field.env_name) {
+                Some(value) if !value.trim().is_empty() => {
+                    source_envs.push(field.env_name.to_owned());
+                    consumed_envs.push(field.env_name.to_owned());
+                    match field.field {
+                        "token" => token = Some(value.clone()),
+                        "accountId" => account_id = Some(value.clone()),
+                        _ => {}
+                    }
+                }
+                _ if field.required => missing_required = true,
+                _ => {}
+            }
+        }
+
+        if missing_required {
+            continue;
+        }
+        if let Some(token) = token {
+            candidates.push(ImportCandidate {
+                item: preset.name.to_owned(),
+                label: preset.label.to_owned(),
+                service_url: Some(preset.service_url.to_owned()),
+                token,
+                account_id,
+                source_envs,
+                source_kind: "preset",
+            });
+        }
+    }
+
+    if !options.preset_only && options.presets.is_empty() {
+        for (env_name, value) in source_env {
+            if consumed_envs.iter().any(|consumed| consumed == env_name)
+                || !is_custom_secret_env_name(env_name)
+            {
+                continue;
+            }
+            candidates.push(ImportCandidate {
+                item: env_name_to_item_name(env_name)?,
+                label: env_name.clone(),
+                service_url: None,
+                token: value.clone(),
+                account_id: None,
+                source_envs: vec![env_name.clone()],
+                source_kind: "custom",
+            });
+        }
+    }
+
+    candidates.sort_by(|left, right| left.item.cmp(&right.item));
+    Ok(candidates)
+}
+
+fn selected_import_presets(names: &[String]) -> Result<Vec<&'static presets::Preset>> {
+    if names.is_empty() {
+        return Ok(PRESETS.iter().collect());
+    }
+    let mut selected = Vec::new();
+    for name in names {
+        selected.push(find_preset(name).ok_or_else(|| {
+            AgvtError::new(format!(
+                "unknown import-env preset: {name}. Use `agvt presets` to list presets."
+            ))
+        })?);
+    }
+    Ok(selected)
+}
+
+fn is_custom_secret_env_name(env_name: &str) -> bool {
+    if env_name.starts_with("NEXT_PUBLIC_") || env_name.starts_with("PUBLIC_") {
+        return false;
+    }
+    env_name.ends_with("_TOKEN")
+        || env_name.ends_with("_API_KEY")
+        || env_name.ends_with("_SECRET")
+        || env_name.ends_with("_SECRET_KEY")
+        || env_name.ends_with("_SERVICE_ROLE_KEY")
+        || env_name.ends_with("_PASSWORD")
+        || env_name.ends_with("_PRIVATE_KEY")
+        || env_name == "DATABASE_URL"
+}
+
+fn env_name_to_item_name(env_name: &str) -> Result<String> {
+    let item = env_name.to_ascii_lowercase().replace('_', "-");
+    reference::validate_name(&item, "item")
+}
+
+fn print_import_env_summary(
+    candidates: &[ImportCandidate],
+    dry_run: bool,
+    as_json: bool,
+) -> Result<()> {
+    if as_json {
+        let imports: Vec<_> = candidates
+            .iter()
+            .map(|candidate| {
+                serde_json::json!({
+                    "item": candidate.item,
+                    "label": candidate.label,
+                    "sourceKind": candidate.source_kind,
+                    "sourceEnvNames": candidate.source_envs,
+                    "saved": !dry_run
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({ "imports": imports }))?
+        );
+        return Ok(());
+    }
+
+    if candidates.is_empty() {
+        println!("No matching environment variables found.");
+        return Ok(());
+    }
+    for candidate in candidates {
+        let action = if dry_run { "would import" } else { "imported" };
+        println!(
+            "{} {}\t{}\t{}",
+            action,
+            candidate.item,
+            candidate.source_kind,
+            candidate.source_envs.join(",")
+        );
+    }
+    Ok(())
 }
 
 fn handle_inject(options: &GlobalOptions) -> Result<()> {
