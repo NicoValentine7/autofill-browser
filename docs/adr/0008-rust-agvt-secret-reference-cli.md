@@ -2,6 +2,10 @@
 
 Status: Accepted
 
+Note: ADR 0010 supersedes the short-reference behavior described here. New
+secret references must include the vault segment, such as
+`agvt://global/cloudflare/token`.
+
 ## Context
 
 The first Agent Vault CLI proved the security boundary, but the UX still felt too heavy for daily Codex and Claude Code work. The target experience is closer to 1Password CLI: short command names, `run` as the main handoff, and secret references that can live in environment variables or templates without storing plaintext tokens in project files.
@@ -12,20 +16,20 @@ Add a Rust CLI named `agvt`. It keeps the existing encrypted `.local/agent-vault
 
 `agvt` accepts secret references in this form:
 
-- `agvt://dev/cloudflare/token`
-- `agvt://cloudflare/token`
+- `agvt://global/cloudflare/token`
+- `agvt://repo/cloudflare/token`
 
-The short form defaults to the `dev` vault. Internally, `dev` items reuse the existing item key for compatibility, while non-default vaults are stored as `vault:item`.
+ADR 0010 disables the short form. Internally, `dev` items reuse the existing item key for compatibility, while non-default vaults are stored as `vault:item`.
 
 The primary commands are:
 
 - `agvt add cloudflare`
 - `agvt add openai`
-- `agvt read agvt://cloudflare/token`
+- `agvt read agvt://global/cloudflare/token`
 - `agvt run cloudflare -- <command>`
 - `agvt run openai -- <command>`
 - `agvt run cloudflare --clean-env --redact-output -- <command>`
-- `CLOUDFLARE_API_TOKEN=agvt://cloudflare/token agvt run -- <command>`
+- `CLOUDFLARE_API_TOKEN=agvt://global/cloudflare/token agvt run -- <command>`
 - `agvt inject --redact-output <template>`
 - `agvt keychain set`
 - `agvt import-env --dry-run`

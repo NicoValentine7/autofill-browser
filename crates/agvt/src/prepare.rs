@@ -8,8 +8,8 @@ use crate::presets::PRESETS;
 use crate::reference::{self, item_target_to_ref, validate_env_name};
 use crate::vault::{canonical_payload_field, read_secret_field, require_passphrase_for_path};
 use crate::{
-    import_env_candidates, load_import_env_source, selected_import_presets, take_value,
-    GlobalOptions, ImportEnvOptions,
+    import_env_candidates, load_import_env_source, path_for_secret_ref, selected_import_presets,
+    take_value, GlobalOptions, ImportEnvOptions,
 };
 
 #[derive(Default)]
@@ -24,6 +24,7 @@ struct PrepareOptions {
 
 struct PrepareManifest {
     path: String,
+    vault: Option<String>,
     presets: Vec<String>,
     secrets: Vec<PrepareManifestSecret>,
 }
@@ -39,6 +40,7 @@ struct PrepareManifestSecret {
 
 #[derive(Clone)]
 struct PrepareRequirement {
+    vault: Option<String>,
     item: String,
     field: String,
     env_name: Option<String>,
@@ -80,19 +82,14 @@ pub(crate) fn handle_prepare(options: &GlobalOptions) -> Result<()> {
     };
     let source_env = load_import_env_source(&import_options)?;
     let requirements = prepare_requirements(&prepare_options, manifest.as_ref(), &source_env)?;
-    let vault_access = prepare_vault_access(&options.vault_path);
+    let summary_vault_path = prepare_summary_vault_path(options, &requirements)?;
+    let vault_access = prepare_vault_access(summary_vault_path);
     let vault_status = match &vault_access {
         PrepareVaultAccess::Missing => "missing",
         PrepareVaultAccess::Ready(_) => "ready",
         PrepareVaultAccess::Locked => "locked",
     };
-    let findings = prepare_findings(
-        &requirements,
-        &source_env,
-        &vault_access,
-        &options.vault_path,
-        &options.default_vault,
-    )?;
+    let findings = prepare_findings(&requirements, &source_env, &vault_access, options)?;
     let suggested_commands = prepare_suggested_commands(&findings);
     let summary = PrepareSummary {
         repo: env::current_dir()?
@@ -101,7 +98,7 @@ pub(crate) fn handle_prepare(options: &GlobalOptions) -> Result<()> {
             .unwrap_or_else(|| "unknown".to_owned()),
         manifest_path: manifest.as_ref().map(|manifest| manifest.path.clone()),
         manifest_found: manifest.is_some(),
-        vault_path: options.vault_path.display().to_string(),
+        vault_path: summary_vault_path.display().to_string(),
         vault_status,
         findings,
         suggested_commands,
@@ -180,6 +177,7 @@ fn parse_prepare_manifest(path: &str, content: &str) -> Result<PrepareManifest> 
     }
 
     let mut section = Section::None;
+    let mut vault = None;
     let mut presets = Vec::new();
     let mut secrets = Vec::new();
     let mut current_secret: Option<PrepareManifestSecret> = None;
@@ -209,6 +207,12 @@ fn parse_prepare_manifest(path: &str, content: &str) -> Result<PrepareManifest> 
         match section {
             Section::Prepare if key == "presets" => {
                 presets = parse_toml_string_array(value)?;
+            }
+            Section::Prepare if key == "vault" => {
+                vault = Some(reference::validate_name(
+                    &parse_toml_string(value)?,
+                    "vault",
+                )?);
             }
             Section::PrepareSecret => {
                 let secret = current_secret
@@ -242,6 +246,7 @@ fn parse_prepare_manifest(path: &str, content: &str) -> Result<PrepareManifest> 
     finish_prepare_manifest_secret(&mut current_secret, &mut secrets)?;
     Ok(PrepareManifest {
         path: path.to_owned(),
+        vault,
         presets,
         secrets,
     })
@@ -302,7 +307,11 @@ fn prepare_requirements(
 ) -> Result<Vec<PrepareRequirement>> {
     let mut requirements = BTreeMap::new();
     if let Some(manifest) = manifest {
-        add_prepare_preset_requirements(&mut requirements, &manifest.presets)?;
+        add_prepare_preset_requirements(
+            &mut requirements,
+            &manifest.presets,
+            manifest.vault.as_deref(),
+        )?;
         for secret in &manifest.secrets {
             let item = secret
                 .item
@@ -311,6 +320,7 @@ fn prepare_requirements(
             add_prepare_requirement(
                 &mut requirements,
                 PrepareRequirement {
+                    vault: manifest.vault.clone(),
                     item,
                     field: secret.field.clone().unwrap_or_else(|| "token".to_owned()),
                     env_name: secret.env_name.clone(),
@@ -328,7 +338,7 @@ fn prepare_requirements(
     } else {
         options.presets.clone()
     };
-    add_prepare_preset_requirements(&mut requirements, &presets)?;
+    add_prepare_preset_requirements(&mut requirements, &presets, None)?;
 
     let import_options = ImportEnvOptions::default();
     for candidate in import_env_candidates(source_env, &import_options)? {
@@ -336,6 +346,7 @@ fn prepare_requirements(
             add_prepare_requirement(
                 &mut requirements,
                 PrepareRequirement {
+                    vault: None,
                     item: candidate.item,
                     field: "token".to_owned(),
                     env_name: candidate.source_envs.first().cloned(),
@@ -352,12 +363,14 @@ fn prepare_requirements(
 fn add_prepare_preset_requirements(
     requirements: &mut BTreeMap<String, PrepareRequirement>,
     presets: &[String],
+    vault: Option<&str>,
 ) -> Result<()> {
     for preset in selected_import_presets(presets)? {
         for field in preset.fields {
             add_prepare_requirement(
                 requirements,
                 PrepareRequirement {
+                    vault: vault.map(str::to_owned),
                     item: preset.name.to_owned(),
                     field: field.field.to_owned(),
                     env_name: Some(field.env_name.to_owned()),
@@ -375,7 +388,12 @@ fn add_prepare_requirement(
     requirements: &mut BTreeMap<String, PrepareRequirement>,
     requirement: PrepareRequirement,
 ) {
-    let key = format!("{}.{}", requirement.item, requirement.field);
+    let key = format!(
+        "{}.{}.{}",
+        requirement.vault.as_deref().unwrap_or("-"),
+        requirement.item,
+        requirement.field
+    );
     requirements.entry(key).or_insert(requirement);
 }
 
@@ -424,12 +442,26 @@ fn prepare_vault_access(vault_path: &Path) -> PrepareVaultAccess {
     }
 }
 
+fn prepare_summary_vault_path<'a>(
+    options: &'a GlobalOptions,
+    requirements: &[PrepareRequirement],
+) -> Result<&'a Path> {
+    let Some(requirement) = requirements.first() else {
+        return Ok(&options.vault_path);
+    };
+    let vault = requirement
+        .vault
+        .as_deref()
+        .unwrap_or(&options.default_vault);
+    let secret_ref = item_target_to_ref(&requirement.item, vault, &requirement.field)?;
+    Ok(path_for_secret_ref(options, &secret_ref))
+}
+
 fn prepare_findings(
     requirements: &[PrepareRequirement],
     source_env: &BTreeMap<String, String>,
     vault_access: &PrepareVaultAccess,
-    vault_path: &Path,
-    default_vault: &str,
+    options: &GlobalOptions,
 ) -> Result<Vec<PrepareFinding>> {
     let mut findings = Vec::new();
     for requirement in requirements {
@@ -441,8 +473,12 @@ fn prepare_findings(
             .unwrap_or(false);
         let vault_present = match vault_access {
             PrepareVaultAccess::Ready(passphrase) => {
-                let secret_ref =
-                    item_target_to_ref(&requirement.item, default_vault, &requirement.field)?;
+                let vault = requirement
+                    .vault
+                    .as_deref()
+                    .unwrap_or(&options.default_vault);
+                let secret_ref = item_target_to_ref(&requirement.item, vault, &requirement.field)?;
+                let vault_path = path_for_secret_ref(options, &secret_ref);
                 match read_secret_field(vault_path, passphrase, &secret_ref) {
                     Ok(value) => Some(!value.trim().is_empty()),
                     Err(_error) => Some(false),
@@ -479,7 +515,13 @@ fn prepare_action(requirement: &PrepareRequirement, status: &str) -> Option<Stri
     match status {
         "importable" => Some("agvt import-env --dry-run".to_owned()),
         "missing" if requirement.required && requirement.field == "token" => {
-            Some(format!("agvt add {} --from-stdin", requirement.item))
+            match &requirement.vault {
+                Some(vault) => Some(format!(
+                    "agvt add agvt://{}/{}/token --from-stdin",
+                    vault, requirement.item
+                )),
+                None => Some(format!("agvt add {} --from-stdin", requirement.item)),
+            }
         }
         _ => None,
     }
@@ -504,6 +546,11 @@ fn print_prepare_summary(summary: &PrepareSummary, as_json: bool) -> Result<()> 
             .iter()
             .map(|finding| {
                 serde_json::json!({
+                    "vault": finding
+                        .requirement
+                        .vault
+                        .as_deref()
+                        .unwrap_or("default"),
                     "item": &finding.requirement.item,
                     "field": &finding.requirement.field,
                     "envName": &finding.requirement.env_name,
@@ -589,9 +636,13 @@ where
             "optional"
         };
         let env_name = finding.requirement.env_name.as_deref().unwrap_or("-");
-        println!(
-            "  {}.{}\t{}\t{}",
-            finding.requirement.item, finding.requirement.field, required, env_name
-        );
+        let target = match finding.requirement.vault.as_deref() {
+            Some(vault) => format!(
+                "{}.{}.{}",
+                vault, finding.requirement.item, finding.requirement.field
+            ),
+            None => format!("{}.{}", finding.requirement.item, finding.requirement.field),
+        };
+        println!("  {}\t{}\t{}", target, required, env_name);
     }
 }

@@ -8,7 +8,7 @@ Status: Accepted
 
 ## Decision
 
-Add `agvt prepare` as a dry-run diagnostic command. It reads `agvt.toml` when present, otherwise uses conservative repo and provider hints such as Wrangler config files and known preset env names. The command reports each required field as `present`, `importable`, `missing`, or `unchecked`.
+Add `agvt prepare` as a dry-run diagnostic command. It reads `agvt.toml` when present, otherwise uses conservative repo and provider hints such as Wrangler config files and known preset env names. The command reports each required field as `present`, `importable`, `missing`, or `unchecked`. A manifest may set `vault = "global"` so common agent-facing provider tokens are checked in the global Agent Vault instead of the repo-local Vault.
 
 `prepare` does not save secrets, rewrite env files, delete plaintext values, create provider tokens, or call Cloudflare APIs. Cloudflare token creation remains only in the explicit `agvt cloudflare create-token` flow from ADR 0008.
 

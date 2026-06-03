@@ -24,15 +24,17 @@ use reference::{
     SECRET_REF_PREFIX,
 };
 use vault::{
-    canonical_payload_field, default_vault_path, delete_item, list_items, read_secret_field,
-    require_passphrase_for_path, upsert_api_token, upsert_secret, validate_item_kind,
-    validate_passphrase_value, UpsertSecretInput, UpsertTokenInput, AGVT_PASSPHRASE_ENV,
-    LEGACY_PASSPHRASE_ENV,
+    canonical_payload_field, default_global_vault_path, default_vault_path, delete_item,
+    list_items, read_secret_field, require_passphrase_for_path, upsert_api_token, upsert_secret,
+    validate_item_kind, validate_passphrase_value, UpsertSecretInput, UpsertTokenInput,
+    AGVT_PASSPHRASE_ENV, LEGACY_PASSPHRASE_ENV,
 };
 
 #[derive(Debug)]
 pub(crate) struct GlobalOptions {
     pub(crate) vault_path: PathBuf,
+    pub(crate) global_vault_path: PathBuf,
+    pub(crate) single_vault_path: bool,
     pub(crate) default_vault: String,
     command: String,
     pub(crate) args: Vec<String>,
@@ -102,6 +104,8 @@ fn run() -> Result<()> {
 
 fn parse_global_options(mut args: Vec<String>) -> Result<GlobalOptions> {
     let mut vault_path = PathBuf::from(default_vault_path());
+    let mut global_vault_path = PathBuf::from(default_global_vault_path());
+    let mut single_vault_path = false;
     let mut default_vault = DEFAULT_VAULT_NAME.to_owned();
     let index = 0;
 
@@ -109,6 +113,11 @@ fn parse_global_options(mut args: Vec<String>) -> Result<GlobalOptions> {
         match args[index].as_str() {
             "--vault-path" => {
                 vault_path = PathBuf::from(take_value(&args, index, "--vault-path")?);
+                single_vault_path = true;
+                args.drain(index..=index + 1);
+            }
+            "--global-vault-path" => {
+                global_vault_path = PathBuf::from(take_value(&args, index, "--global-vault-path")?);
                 args.drain(index..=index + 1);
             }
             "--vault" => {
@@ -127,10 +136,22 @@ fn parse_global_options(mut args: Vec<String>) -> Result<GlobalOptions> {
 
     Ok(GlobalOptions {
         vault_path,
+        global_vault_path,
+        single_vault_path,
         default_vault,
         command,
         args,
     })
+}
+
+pub(crate) fn path_for_secret_ref<'a>(
+    options: &'a GlobalOptions,
+    secret_ref: &reference::SecretRef,
+) -> &'a Path {
+    if !options.single_vault_path && secret_ref.vault == "global" {
+        return &options.global_vault_path;
+    }
+    &options.vault_path
 }
 
 pub(crate) fn take_value(args: &[String], index: usize, option: &str) -> Result<String> {
@@ -159,13 +180,14 @@ fn handle_add(options: &GlobalOptions) -> Result<()> {
         .map(validate_item_kind)
         .transpose()?
         .unwrap_or_else(|| "api-token".to_owned());
-    let passphrase = require_passphrase_for_path(&options.vault_path)?;
+    let vault_path = path_for_secret_ref(options, &secret_ref);
+    let passphrase = require_passphrase_for_path(vault_path)?;
 
     if kind != "api-token" {
         let fields = read_secret_fields(&kind, &add_options)?;
         let saved_field = default_secret_value_field(&kind)?;
         upsert_secret(
-            &options.vault_path,
+            vault_path,
             &passphrase,
             UpsertSecretInput {
                 secret_ref: secret_ref.clone(),
@@ -194,7 +216,7 @@ fn handle_add(options: &GlobalOptions) -> Result<()> {
     });
 
     upsert_api_token(
-        &options.vault_path,
+        vault_path,
         &passphrase,
         UpsertTokenInput {
             secret_ref: secret_ref.clone(),
@@ -416,17 +438,17 @@ fn handle_read(options: &GlobalOptions) -> Result<()> {
     };
     let field = options.args.get(1).map(String::as_str).unwrap_or("token");
     let secret_ref = item_target_to_ref(target, &options.default_vault, field)?;
-    let passphrase = require_passphrase_for_path(&options.vault_path)?;
+    let vault_path = path_for_secret_ref(options, &secret_ref);
+    let passphrase = require_passphrase_for_path(vault_path)?;
     println!(
         "{}",
-        read_secret_field(&options.vault_path, &passphrase, &secret_ref)?
+        read_secret_field(vault_path, &passphrase, &secret_ref)?
     );
     Ok(())
 }
 
 fn handle_run(options: &GlobalOptions) -> Result<()> {
     let run_options = parse_run_options(&options.args, &options.default_vault)?;
-    let passphrase = require_passphrase_for_path(&options.vault_path)?;
     let source_env: BTreeMap<String, String> = env::vars().collect();
     let mut child_env = if run_options.clean_env {
         build_clean_environment(&source_env)
@@ -443,7 +465,9 @@ fn handle_run(options: &GlobalOptions) -> Result<()> {
 
     let mut redactions = Vec::new();
     for mapping in run_options.mappings {
-        let value = read_secret_field(&options.vault_path, &passphrase, &mapping.secret_ref)?;
+        let vault_path = path_for_secret_ref(options, &mapping.secret_ref);
+        let passphrase = require_passphrase_for_path(vault_path)?;
+        let value = read_secret_field(vault_path, &passphrase, &mapping.secret_ref)?;
         if value.trim().is_empty() && !mapping.required {
             continue;
         }
@@ -457,8 +481,7 @@ fn handle_run(options: &GlobalOptions) -> Result<()> {
         child_env.insert(mapping.env_name, value);
     }
     redactions.extend(resolve_environment_secret_refs(
-        &options.vault_path,
-        &passphrase,
+        options,
         &mut child_env,
         &options.default_vault,
     )?);
@@ -574,8 +597,7 @@ fn parse_run_options(args: &[String], default_vault: &str) -> Result<RunOptions>
 }
 
 fn resolve_environment_secret_refs(
-    vault_path: &Path,
-    passphrase: &str,
+    options: &GlobalOptions,
     child_env: &mut BTreeMap<String, String>,
     default_vault: &str,
 ) -> Result<Vec<String>> {
@@ -588,7 +610,9 @@ fn resolve_environment_secret_refs(
     for key in keys {
         if let Some(raw_ref) = child_env.get(&key).cloned() {
             let secret_ref = parse_secret_ref(&raw_ref, default_vault)?;
-            let value = read_secret_field(vault_path, passphrase, &secret_ref)?;
+            let vault_path = path_for_secret_ref(options, &secret_ref);
+            let passphrase = require_passphrase_for_path(vault_path)?;
+            let value = read_secret_field(vault_path, &passphrase, &secret_ref)?;
             redactions.push(value.clone());
             child_env.insert(key, value);
         }
@@ -718,11 +742,12 @@ fn handle_import_env(options: &GlobalOptions) -> Result<()> {
         return Ok(());
     }
 
-    let passphrase = require_passphrase_for_path(&options.vault_path)?;
     for candidate in &candidates {
         let secret_ref = item_target_to_ref(&candidate.item, &options.default_vault, "token")?;
+        let vault_path = path_for_secret_ref(options, &secret_ref);
+        let passphrase = require_passphrase_for_path(vault_path)?;
         upsert_api_token(
-            &options.vault_path,
+            vault_path,
             &passphrase,
             UpsertTokenInput {
                 secret_ref,
@@ -987,7 +1012,6 @@ fn handle_inject(options: &GlobalOptions) -> Result<()> {
         Some("-") | None => read_stdin()?,
         Some(path) => std::fs::read_to_string(path)?,
     };
-    let passphrase = require_passphrase_for_path(&options.vault_path)?;
     let mut output = input.clone();
     let refs = find_secret_refs(&input);
     if !refs.is_empty() && !inject_options.redact_output {
@@ -997,7 +1021,9 @@ fn handle_inject(options: &GlobalOptions) -> Result<()> {
     }
     for raw_ref in refs {
         let secret_ref = parse_secret_ref(&raw_ref, &options.default_vault)?;
-        let value = read_secret_field(&options.vault_path, &passphrase, &secret_ref)?;
+        let vault_path = path_for_secret_ref(options, &secret_ref);
+        let passphrase = require_passphrase_for_path(vault_path)?;
+        let value = read_secret_field(vault_path, &passphrase, &secret_ref)?;
         let replacement = if inject_options.redact_output {
             "[REDACTED]"
         } else {
@@ -1066,8 +1092,9 @@ fn handle_totp(options: &GlobalOptions) -> Result<()> {
     }
 
     let secret_ref = item_target_to_ref(target, &options.default_vault, "secret")?;
-    let passphrase = require_passphrase_for_path(&options.vault_path)?;
-    let secret = read_secret_field(&options.vault_path, &passphrase, &secret_ref)?;
+    let vault_path = path_for_secret_ref(options, &secret_ref);
+    let passphrase = require_passphrase_for_path(vault_path)?;
+    let secret = read_secret_field(vault_path, &passphrase, &secret_ref)?;
     println!("{}", totp::current_totp_code(&secret, digits, period)?);
     Ok(())
 }
@@ -1161,8 +1188,7 @@ fn handle_cloudflare_create_token(options: &GlobalOptions) -> Result<()> {
         .policy_file
         .clone()
         .ok_or_else(|| AgvtError::new("cloudflare create-token requires --policy-file."))?;
-    let passphrase = require_passphrase_for_path(&options.vault_path)?;
-    let factory_token = read_cloudflare_factory_token(options, &passphrase, &create_options)?;
+    let factory_token = read_cloudflare_factory_token(options, &create_options)?;
     let created = create_user_token(CreateTokenInput {
         factory_token,
         name: name.clone(),
@@ -1172,9 +1198,11 @@ fn handle_cloudflare_create_token(options: &GlobalOptions) -> Result<()> {
         condition: None,
     })?;
     let secret_ref = item_target_to_ref(&item, &options.default_vault, "token")?;
+    let vault_path = path_for_secret_ref(options, &secret_ref);
+    let passphrase = require_passphrase_for_path(vault_path)?;
 
     upsert_api_token(
-        &options.vault_path,
+        vault_path,
         &passphrase,
         UpsertTokenInput {
             secret_ref: secret_ref.clone(),
@@ -1262,7 +1290,6 @@ fn parse_cloudflare_create_options(args: &[String]) -> Result<CloudflareCreateOp
 
 fn read_cloudflare_factory_token(
     options: &GlobalOptions,
-    passphrase: &str,
     create_options: &CloudflareCreateOptions,
 ) -> Result<String> {
     if let Some(env_name) = &create_options.factory_token_env {
@@ -1271,7 +1298,9 @@ fn read_cloudflare_factory_token(
     }
     if let Some(raw_ref) = &create_options.factory_token_ref {
         let secret_ref = item_target_to_ref(raw_ref, &options.default_vault, "token")?;
-        return read_secret_field(&options.vault_path, passphrase, &secret_ref);
+        let vault_path = path_for_secret_ref(options, &secret_ref);
+        let passphrase = require_passphrase_for_path(vault_path)?;
+        return read_secret_field(vault_path, &passphrase, &secret_ref);
     }
     env::var("CLOUDFLARE_TOKEN_FACTORY_TOKEN")
         .or_else(|_| env::var("CLOUDFLARE_API_TOKEN"))
@@ -1284,7 +1313,10 @@ fn read_cloudflare_factory_token(
 
 fn handle_list(options: &GlobalOptions) -> Result<()> {
     let as_json = options.args.iter().any(|arg| arg == "--json");
-    let items = list_items(&options.vault_path)?;
+    let mut items = list_items(&options.vault_path)?;
+    if !options.single_vault_path && options.global_vault_path != options.vault_path {
+        items.extend(list_items(&options.global_vault_path)?);
+    }
     if as_json {
         let json_items: Vec<_> = items
             .iter()
@@ -1325,8 +1357,9 @@ fn handle_delete(options: &GlobalOptions) -> Result<()> {
         ));
     };
     let secret_ref = item_target_to_ref(target, &options.default_vault, "token")?;
-    let passphrase = require_passphrase_for_path(&options.vault_path)?;
-    delete_item(&options.vault_path, &passphrase, &secret_ref)?;
+    let vault_path = path_for_secret_ref(options, &secret_ref);
+    let passphrase = require_passphrase_for_path(vault_path)?;
+    delete_item(vault_path, &passphrase, &secret_ref)?;
     println!(
         "deleted agvt://{}/{}/token",
         secret_ref.vault, secret_ref.item

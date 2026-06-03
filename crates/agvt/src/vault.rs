@@ -23,6 +23,7 @@ pub const DEFAULT_AGENT_VAULT_PATH: &str = ".local/agent-vault.json";
 pub const AGVT_PASSPHRASE_ENV: &str = "AGVT_PASSPHRASE";
 pub const LEGACY_PASSPHRASE_ENV: &str = "AUTOFILL_AGENT_VAULT_PASSPHRASE";
 pub const AGVT_PATH_ENV: &str = "AGVT_PATH";
+pub const AGVT_GLOBAL_PATH_ENV: &str = "AGVT_GLOBAL_PATH";
 pub const LEGACY_PATH_ENV: &str = "AUTOFILL_AGENT_VAULT_PATH";
 
 const SCHEMA_VERSION: u8 = 1;
@@ -410,6 +411,35 @@ pub fn default_vault_path() -> String {
         .unwrap_or_else(|_| DEFAULT_AGENT_VAULT_PATH.to_owned())
 }
 
+pub fn default_global_vault_path() -> String {
+    if let Ok(path) = std::env::var(AGVT_GLOBAL_PATH_ENV) {
+        if !path.trim().is_empty() {
+            return path;
+        }
+    }
+    if let Ok(path) = std::env::var("XDG_DATA_HOME") {
+        if !path.trim().is_empty() {
+            return PathBuf::from(path)
+                .join("agvt")
+                .join("agent-vault.json")
+                .to_string_lossy()
+                .into_owned();
+        }
+    }
+    if let Ok(path) = std::env::var("HOME") {
+        if !path.trim().is_empty() {
+            return PathBuf::from(path)
+                .join(".local")
+                .join("share")
+                .join("agvt")
+                .join("agent-vault.json")
+                .to_string_lossy()
+                .into_owned();
+        }
+    }
+    ".local/share/agvt/agent-vault.json".to_owned()
+}
+
 pub fn load_vault(path: &Path) -> Result<Option<VaultFile>> {
     if !path.exists() {
         return Ok(None);
@@ -708,7 +738,7 @@ mod tests {
             read_secret_field(
                 &path,
                 passphrase,
-                &item_target_to_ref("agvt://cloudflare/service-url", "dev", "token").unwrap()
+                &item_target_to_ref("agvt://dev/cloudflare/service-url", "dev", "token").unwrap()
             )
             .unwrap(),
             "https://api.cloudflare.com/client/v4"
@@ -717,7 +747,7 @@ mod tests {
             read_secret_field(
                 &path,
                 passphrase,
-                &item_target_to_ref("agvt://cloudflare/account-id", "dev", "token").unwrap()
+                &item_target_to_ref("agvt://dev/cloudflare/account-id", "dev", "token").unwrap()
             )
             .unwrap(),
             "account-123"

@@ -1,2 +1,3 @@
 [prepare]
+vault = "global"
 presets = ["cloudflare"]

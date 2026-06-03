@@ -23,10 +23,10 @@ Common flows:
   agvt run cloudflare -- npx wrangler whoami
       Run a command with Cloudflare env vars injected.
 
-  GITHUB_TOKEN=agvt://github/token agvt run -- gh auth status
+  GITHUB_TOKEN=agvt://global/github/token agvt run -- gh auth status
       Resolve agvt:// refs already present in the environment.
 
-  agvt read agvt://cloudflare/account-id
+  agvt read agvt://global/cloudflare/account-id
       Print one field from one item.
 
 Commands:
@@ -38,13 +38,13 @@ Commands:
       --field-env NAME=ENV, or --field-stdin NAME.
 
   agvt read <item-or-ref> [field]
-      Read a field. Examples: cloudflare token, agvt://github/token,
-      agvt://github-ssh/private-key.
+      Read a field. Examples: cloudflare token, agvt://global/github/token,
+      agvt://repo/github-ssh/private-key.
 
   agvt run [preset] [--env ENV=ref] [safety options] -- <command> [args...]
       Inject selected secrets into a child process.
       Presets: cloudflare, openai, anthropic, vercel, stripe, slack, github.
-      Custom: --env TOKEN=agvt://item/token.
+      Custom: --env TOKEN=agvt://global/item/token.
       Safety: --clean-env --redact-output --sandbox no-network.
 
   agvt inject [--redact-output] [template-file|-]
@@ -87,13 +87,15 @@ Commands:
       Show built-in presets and injected fields.
 
 Secret refs:
-  agvt://dev/cloudflare/token
-  agvt://cloudflare/token        # short form defaults to the dev vault
-  agvt://github-ssh/private-key
+  agvt://global/cloudflare/token
+  agvt://repo/cloudflare/token
+  agvt://repo/github-ssh/private-key
+  Short refs such as agvt://cloudflare/token are disabled.
 
 Environment:
   AGVT_PASSPHRASE      Vault passphrase. Keychain is used if absent on macOS.
-  AGVT_PATH            Vault file path. Default: .local/agent-vault.json
+  AGVT_PATH            Repo-local vault path. Default: .local/agent-vault.json
+  AGVT_GLOBAL_PATH     Global vault path. Default: ~/.local/share/agvt/agent-vault.json
   AGVT_KEYCHAIN=0      Disable Keychain lookup.
   AGVT_LANG=ja|en      Choose help language.
 
@@ -123,10 +125,10 @@ const HELP_JA: &str = r#"agvt - Agent Vault CLI
   agvt run cloudflare -- npx wrangler whoami
       Cloudflare用の環境変数を注入してコマンドを実行する
 
-  GITHUB_TOKEN=agvt://github/token agvt run -- gh auth status
+  GITHUB_TOKEN=agvt://global/github/token agvt run -- gh auth status
       環境変数に入っている agvt:// 参照を実行時だけ解決する
 
-  agvt read agvt://cloudflare/account-id
+  agvt read agvt://global/cloudflare/account-id
       1つのitemから1つのfieldだけ読む
 
 コマンド一覧:
@@ -138,13 +140,13 @@ const HELP_JA: &str = r#"agvt - Agent Vault CLI
       --field NAME=VALUE、--field-env NAME=ENV、--field-stdin NAME
 
   agvt read <item-or-ref> [field]
-      fieldを読む。例: cloudflare token、agvt://github/token、
-      agvt://github-ssh/private-key
+      fieldを読む。例: cloudflare token、agvt://global/github/token、
+      agvt://repo/github-ssh/private-key
 
   agvt run [preset] [--env ENV=ref] [safety options] -- <command> [args...]
       選んだsecretだけを子プロセスへ渡す
       preset: cloudflare, openai, anthropic, vercel, stripe, slack, github
-      custom: --env TOKEN=agvt://item/token
+      custom: --env TOKEN=agvt://global/item/token
       safety: --clean-env --redact-output --sandbox no-network
 
   agvt inject [--redact-output] [template-file|-]
@@ -187,13 +189,15 @@ const HELP_JA: &str = r#"agvt - Agent Vault CLI
       built-in presetと注入されるfieldを見る
 
 secret reference:
-  agvt://dev/cloudflare/token
-  agvt://cloudflare/token        # 短縮形は dev vault 扱い
-  agvt://github-ssh/private-key
+  agvt://global/cloudflare/token
+  agvt://repo/cloudflare/token
+  agvt://repo/github-ssh/private-key
+  agvt://cloudflare/token のような短縮形は無効
 
 環境変数:
   AGVT_PASSPHRASE      Vault passphrase。macOSでは未指定時にKeychainを見る
-  AGVT_PATH            Vault file path。default: .local/agent-vault.json
+  AGVT_PATH            repo-local Vault path。default: .local/agent-vault.json
+  AGVT_GLOBAL_PATH     global Vault path。default: ~/.local/share/agvt/agent-vault.json
   AGVT_KEYCHAIN=0      Keychain lookupを無効化
   AGVT_LANG=ja|en      help languageを選ぶ
 
