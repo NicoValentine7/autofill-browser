@@ -158,6 +158,7 @@ fn handle_add(options: &GlobalOptions) -> Result<()> {
 
     if kind != "api-token" {
         let fields = read_secret_fields(&kind, &add_options)?;
+        let saved_field = default_secret_value_field(&kind)?;
         upsert_secret(
             &options.vault_path,
             &passphrase,
@@ -170,7 +171,7 @@ fn handle_add(options: &GlobalOptions) -> Result<()> {
         )?;
         println!(
             "saved agvt://{}/{}/{}",
-            secret_ref.vault, secret_ref.item, secret_ref.field
+            secret_ref.vault, secret_ref.item, saved_field
         );
         return Ok(());
     }
@@ -678,19 +679,58 @@ fn redact_text(value: &str, redactions: &[String]) -> String {
 }
 
 fn handle_inject(options: &GlobalOptions) -> Result<()> {
-    let input = match options.args.first().map(String::as_str) {
+    let inject_options = parse_inject_options(&options.args)?;
+    let input = match inject_options.template.as_deref() {
         Some("-") | None => read_stdin()?,
         Some(path) => std::fs::read_to_string(path)?,
     };
     let passphrase = require_passphrase_for_path(&options.vault_path)?;
     let mut output = input.clone();
-    for raw_ref in find_secret_refs(&input) {
+    let refs = find_secret_refs(&input);
+    if !refs.is_empty() && !inject_options.redact_output {
+        eprintln!(
+            "warning: inject prints resolved secret values. Use --redact-output to preview safely."
+        );
+    }
+    for raw_ref in refs {
         let secret_ref = parse_secret_ref(&raw_ref, &options.default_vault)?;
         let value = read_secret_field(&options.vault_path, &passphrase, &secret_ref)?;
-        output = output.replace(&raw_ref, &value);
+        let replacement = if inject_options.redact_output {
+            "[REDACTED]"
+        } else {
+            &value
+        };
+        output = output.replace(&raw_ref, replacement);
     }
     print!("{output}");
     Ok(())
+}
+
+#[derive(Default)]
+struct InjectOptions {
+    template: Option<String>,
+    redact_output: bool,
+}
+
+fn parse_inject_options(args: &[String]) -> Result<InjectOptions> {
+    let mut options = InjectOptions::default();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--redact-output" => options.redact_output = true,
+            value if value.starts_with("--") => {
+                return Err(AgvtError::new(format!("unknown inject option: {value}")))
+            }
+            value => {
+                if options.template.is_some() {
+                    return Err(AgvtError::new("inject accepts at most one template file."));
+                }
+                options.template = Some(value.to_owned());
+            }
+        }
+        index += 1;
+    }
+    Ok(options)
 }
 
 fn handle_totp(options: &GlobalOptions) -> Result<()> {

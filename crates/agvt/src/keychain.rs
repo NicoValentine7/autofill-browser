@@ -17,6 +17,9 @@ const DEFAULT_KEYCHAIN_SERVICE: &str = "agvt";
 const ERR_SEC_ITEM_NOT_FOUND: OsStatus = -25300;
 
 #[cfg(target_os = "macos")]
+const ERR_SEC_PARAM: OsStatus = -50;
+
+#[cfg(target_os = "macos")]
 type OsStatus = i32;
 
 #[cfg(target_os = "macos")]
@@ -145,8 +148,29 @@ fn stable_path(path: &Path) -> PathBuf {
 fn platform_read_passphrase(target: &KeychainTarget) -> Result<Option<String>> {
     let service = keychain_attribute_bytes("service", &target.service)?;
     let account = keychain_attribute_bytes("account", &target.account)?;
+    let mut found_item_ref = ptr::null_mut();
+    let find_status = unsafe {
+        SecKeychainFindGenericPassword(
+            ptr::null_mut(),
+            service.len() as u32,
+            service.as_ptr().cast::<c_char>(),
+            account.len() as u32,
+            account.as_ptr().cast::<c_char>(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &mut found_item_ref,
+        )
+    };
+
+    if keychain_item_missing(find_status) {
+        return Ok(None);
+    }
+    check_status(find_status, "find macOS Keychain passphrase")?;
+    release_item(found_item_ref);
+
     let mut password_length = 0_u32;
     let mut password_data = ptr::null_mut();
+    let mut item_ref = ptr::null_mut();
     let status = unsafe {
         SecKeychainFindGenericPassword(
             ptr::null_mut(),
@@ -156,11 +180,11 @@ fn platform_read_passphrase(target: &KeychainTarget) -> Result<Option<String>> {
             account.as_ptr().cast::<c_char>(),
             &mut password_length,
             &mut password_data,
-            ptr::null_mut(),
+            &mut item_ref,
         )
     };
 
-    if status == ERR_SEC_ITEM_NOT_FOUND {
+    if keychain_item_missing(status) {
         return Ok(None);
     }
     check_status(status, "read macOS Keychain passphrase")?;
@@ -182,6 +206,7 @@ fn platform_read_passphrase(target: &KeychainTarget) -> Result<Option<String>> {
         let free_status = unsafe { SecKeychainItemFreeContent(ptr::null_mut(), password_data) };
         check_status(free_status, "free macOS Keychain passphrase")?;
     }
+    release_item(item_ref);
     String::from_utf8(password)
         .map(Some)
         .map_err(|_| AgvtError::new("macOS Keychain passphrase is not valid UTF-8."))
@@ -223,7 +248,7 @@ fn platform_store_passphrase(target: &KeychainTarget, passphrase: &str) -> Resul
         release_item(item_ref);
         return check_status(update_status, "update macOS Keychain passphrase");
     }
-    if find_status != ERR_SEC_ITEM_NOT_FOUND {
+    if !keychain_item_missing(find_status) {
         return check_status(find_status, "find macOS Keychain passphrase for update");
     }
 
@@ -269,7 +294,7 @@ fn platform_delete_passphrase(target: &KeychainTarget) -> Result<bool> {
         )
     };
 
-    if find_status == ERR_SEC_ITEM_NOT_FOUND {
+    if keychain_item_missing(find_status) {
         return Ok(false);
     }
     check_status(find_status, "find macOS Keychain passphrase for delete")?;
@@ -317,6 +342,14 @@ fn check_status(status: OsStatus, action: &str) -> Result<()> {
     Err(AgvtError::new(format!(
         "{action} failed: OSStatus {status}"
     )))
+}
+
+#[cfg(target_os = "macos")]
+fn keychain_item_missing(status: OsStatus) -> bool {
+    // Some default-keychain searches report paramErr together with not-found
+    // semantics for never-created generic-password items. Treat it as missing
+    // only after service/account validation has already succeeded.
+    status == ERR_SEC_ITEM_NOT_FOUND || status == ERR_SEC_PARAM
 }
 
 #[cfg(target_os = "macos")]

@@ -104,10 +104,12 @@ pnpm agvt run cloudflare -- npx wrangler whoami
 GITHUB_TOKEN=agvt://github/token pnpm agvt run -- gh auth status
 pnpm agvt read agvt://cloudflare/account-id
 pnpm agvt read agvt://cloudflare/token
-pnpm agvt inject .env.template
+pnpm agvt inject --redact-output .env.template
 ```
 
 `cloudflare` と `github` はプリセットです。`pnpm agvt presets --json` で確認できます。`cloudflare` は `CLOUDFLARE_API_TOKEN` に加えて、保存済みなら `CLOUDFLARE_ACCOUNT_ID` も `run` で渡します。`agvt://cloudflare/token` のような短縮secret referenceは `agvt://dev/cloudflare/token` として扱います。カスタムtokenは `--from-stdin` か `--from-env TOKEN_ENV_NAME` を使い、tokenをコマンド引数に直接載せないでください。
+
+`add` / `delete` はVault file単位のlockを取り、同じVaultへ複数の `agvt` processが同時に書き込んでもlast-write-winsでitemを失わないようにします。`inject` はsecret値を標準出力へ展開するため、確認だけなら `--redact-output` を使ってください。
 
 `AGVT_PASSPHRASE` が未設定の場合、macOSでは `agvt keychain set` で保存したpassphraseをKeychainから読みます。Keychainを使わない場合は `AGVT_KEYCHAIN=0` を付けます。
 
