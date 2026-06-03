@@ -10,7 +10,7 @@ The Chrome extension Secure Vault and the local Agent Vault CLI originally store
 
 Use a Chrome native messaging host named `io.nico.agvt` as the bridge. The fixed local extension ID is allowed to send explicit API token save requests to `scripts/agvt-native-host.mjs`. The host calls the installed `agvt` binary and passes token values through stdin, not command arguments.
 
-The popup keeps its existing Secure Vault write path. If the user fills the `Agent Vault item` field, the popup also sends the token metadata to the native host so the same item is saved into Agent Vault. If the native host is missing or `agvt` cannot unlock the vault, the Secure Vault save still succeeds and the popup reports the bridge failure.
+The popup keeps its existing Secure Vault write path. If the user fills the `Agent Vault item` field, the popup also sends the selected Agent Vault scope (`repo` or `global`) and token metadata to the native host so the same item is saved into Agent Vault. If the native host is missing or `agvt` cannot unlock the vault, the Secure Vault save still succeeds and the popup reports the bridge failure.
 
 ## Why
 
@@ -20,6 +20,7 @@ Native messaging preserves the browser security model while giving the local CLI
 
 - Installing the bridge requires `pnpm install:agvt-native-host`, which writes a Chrome NativeMessagingHosts manifest under the user's home directory.
 - The bridge only syncs explicit popup saves with an `Agent Vault item` value; it does not bulk-export existing Secure Vault entries.
+- The bridge defaults missing scope to `repo` for older popup payloads and passes explicit `agvt://<scope>/<item>/token` references to `agvt`.
 - The native host receives plaintext token values for the save operation, so it must remain local, repo-owned, and small.
 - Web Store extension IDs need their own native messaging manifest allowlist if the extension is distributed there.
 

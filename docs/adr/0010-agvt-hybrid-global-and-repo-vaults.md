@@ -30,7 +30,7 @@ Existing commands that use item names, such as `agvt add cloudflare`, continue t
 
 macOS Keychain passphrases remain vault-path scoped. A global vault and a repo-local vault naturally use separate Keychain accounts unless `AGVT_KEYCHAIN_ACCOUNT` is explicitly set.
 
-The Chrome native messaging bridge currently receives an item name from the popup and therefore remains repo-local by default. A future bridge update can add an explicit global/local selector without changing this vault-file routing decision.
+The Chrome native messaging bridge receives both a scope (`repo` or `global`) and an item name from the popup. Missing scope is treated as `repo` for compatibility, and the host calls `agvt` with an explicit `agvt://<scope>/<item>/token` reference.
 
 ## Verification Expectations
 

@@ -119,6 +119,8 @@ describe("secure-vault recovery", () => {
         token: "ghp_test_secret",
         serviceUrl: "https://api.github.com",
         accountName: "deploy-bot",
+        agentVaultItem: "github",
+        agentVaultScope: "global",
         notes: "repo deploy scope"
       })
     })
@@ -139,6 +141,8 @@ describe("secure-vault recovery", () => {
       token: "ghp_test_secret",
       serviceUrl: "https://api.github.com",
       accountName: "deploy-bot",
+      agentVaultItem: "github",
+      agentVaultScope: "global",
       notes: "repo deploy scope"
     })
   })

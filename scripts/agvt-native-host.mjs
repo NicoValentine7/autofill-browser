@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process"
 
 const AGVT_BIN = process.env.AGVT_BIN || "agvt"
 const ITEM_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
+const VAULT_NAME_PATTERN = /^(repo|global)$/
 
 const readNativeMessage = async () => {
   const chunks = []
@@ -39,6 +40,14 @@ const assertItemName = (value) => {
   return item
 }
 
+const assertVaultName = (value) => {
+  const vault = asTrimmedString(value || "repo").toLowerCase()
+  if (!VAULT_NAME_PATTERN.test(vault)) {
+    throw new Error("Agent Vault vault name is invalid")
+  }
+  return vault
+}
+
 const pushOption = (args, name, value) => {
   const normalized = asTrimmedString(value)
   if (normalized) {
@@ -48,12 +57,14 @@ const pushOption = (args, name, value) => {
 
 const upsertApiToken = (message) => {
   const item = assertItemName(message.item)
+  const vault = assertVaultName(message.vault)
   const token = asTrimmedString(message.token)
   if (!token) {
     throw new Error("API token is required")
   }
 
-  const args = ["add", item, "--from-stdin"]
+  const secretRef = `agvt://${vault}/${item}/token`
+  const args = ["add", secretRef, "--from-stdin"]
   pushOption(args, "--label", message.label)
   pushOption(args, "--service-url", message.serviceUrl)
   pushOption(args, "--account", message.accountName)
@@ -74,7 +85,7 @@ const upsertApiToken = (message) => {
 
   return {
     ok: true,
-    message: `saved agvt://${item}/token`
+    message: `saved ${secretRef}`
   }
 }
 

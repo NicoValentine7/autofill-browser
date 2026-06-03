@@ -164,7 +164,7 @@ agvt add agvt://global/cloudflare/token
 agvt --vault global run cloudflare -- npx wrangler whoami
 ```
 
-Chrome popupのAPI Token Vaultは、native hostを入れると保存時に同じtokenをAgent Vaultへも保存できます。現時点のpopup bridgeは `cloudflare` のようなitem名を渡すため、既定ではrepo-local側へ保存します。host未インストール時はSecure Vault保存だけ続行します。
+Chrome popupのAPI Token Vaultは、native hostを入れると保存時に同じtokenをAgent Vaultへも保存できます。popupでは Agent Vault scope (`repo-local` / `global`) とitem名を選びます。host未インストール時はSecure Vault保存だけ続行します。
 
 ```bash
 pnpm install:agvt
