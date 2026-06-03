@@ -64,6 +64,65 @@ fn keychain_set_rejects_short_passphrase_before_storing() {
         .contains("Keychain passphrase must be at least 24 characters."));
 }
 
+#[test]
+fn short_secret_references_are_rejected() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+
+    let output = agvt_command(&vault_path)
+        .args(["read", "agvt://cloudflare/token"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("short secret references are disabled")
+    );
+}
+
+#[test]
+fn global_refs_use_global_path_without_single_vault_override() {
+    let directory = tempfile::tempdir().unwrap();
+    let xdg_data_home = directory.path().join("xdg-data");
+    let global_vault_path = xdg_data_home.join("agvt").join("agent-vault.json");
+    let local_vault_path = directory.path().join(".local").join("agent-vault.json");
+
+    let add_output = Command::new(env!("CARGO_BIN_EXE_agvt"))
+        .current_dir(directory.path())
+        .env_clear()
+        .env("AGVT_PASSPHRASE", "test-passphrase-with-enough-length")
+        .env("XDG_DATA_HOME", &xdg_data_home)
+        .env("CLOUDFLARE_API_TOKEN", "global_cloudflare_dummy_secret")
+        .args(["add", "agvt://global/cloudflare/token"])
+        .output()
+        .unwrap();
+    assert!(
+        add_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+    assert!(global_vault_path.exists());
+    assert!(!local_vault_path.exists());
+
+    let read_output = Command::new(env!("CARGO_BIN_EXE_agvt"))
+        .current_dir(directory.path())
+        .env_clear()
+        .env("AGVT_PASSPHRASE", "test-passphrase-with-enough-length")
+        .env("XDG_DATA_HOME", &xdg_data_home)
+        .args(["read", "agvt://global/cloudflare/token"])
+        .output()
+        .unwrap();
+    assert!(
+        read_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&read_output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&read_output.stdout).trim(),
+        "global_cloudflare_dummy_secret"
+    );
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn keychain_status_reports_missing_for_never_created_item() {
@@ -110,7 +169,7 @@ fn cloudflare_preset_round_trip_and_run() {
     assert!(!raw_vault.contains("api.cloudflare.com"));
 
     let read_output = agvt_command(&vault_path)
-        .args(["read", "agvt://cloudflare/token"])
+        .args(["read", "agvt://dev/cloudflare/token"])
         .output()
         .unwrap();
     assert!(
@@ -172,7 +231,7 @@ fn provider_presets_round_trip_and_run() {
         let raw_vault = fs::read_to_string(&vault_path).unwrap();
         assert!(!raw_vault.contains(secret));
 
-        let read_ref = format!("agvt://{preset}/token");
+        let read_ref = format!("agvt://dev/{preset}/token");
         let read_output = agvt_command(&vault_path)
             .args(["read", &read_ref])
             .output()
@@ -314,7 +373,7 @@ fn import_env_saves_preset_and_custom_values() {
     assert!(!raw_vault.contains("admin_dummy_secret"));
 
     let token_output = agvt_command(&vault_path)
-        .args(["read", "agvt://cloudflare/token"])
+        .args(["read", "agvt://dev/cloudflare/token"])
         .output()
         .unwrap();
     assert!(
@@ -328,7 +387,7 @@ fn import_env_saves_preset_and_custom_values() {
     );
 
     let account_output = agvt_command(&vault_path)
-        .args(["read", "agvt://cloudflare/account-id"])
+        .args(["read", "agvt://dev/cloudflare/account-id"])
         .output()
         .unwrap();
     assert!(
@@ -342,7 +401,7 @@ fn import_env_saves_preset_and_custom_values() {
     );
 
     let custom_output = agvt_command(&vault_path)
-        .args(["read", "agvt://admin-secret/token"])
+        .args(["read", "agvt://dev/admin-secret/token"])
         .output()
         .unwrap();
     assert!(
@@ -393,7 +452,7 @@ fn run_resolves_environment_secret_references() {
 
     let run_output = agvt_command(&vault_path)
         .args(["run", "--", "sh", "-c", "printf '%s' \"$GITHUB_TOKEN\""])
-        .env("GITHUB_TOKEN", "agvt://github/token")
+        .env("GITHUB_TOKEN", "agvt://dev/github/token")
         .output()
         .unwrap();
     assert!(
@@ -438,7 +497,7 @@ fn stores_totp_items_and_reads_secret_fields() {
     );
 
     let read_output = agvt_command(&vault_path)
-        .args(["read", "agvt://github-totp/issuer"])
+        .args(["read", "agvt://dev/github-totp/issuer"])
         .output()
         .unwrap();
     assert!(
@@ -508,7 +567,7 @@ fn inject_replaces_secret_refs() {
         String::from_utf8_lossy(&add_output.stderr)
     );
 
-    fs::write(&template_path, "TOKEN=agvt://cloudflare/token\n").unwrap();
+    fs::write(&template_path, "TOKEN=agvt://dev/cloudflare/token\n").unwrap();
     let inject_output = agvt_command(&vault_path)
         .args(["inject"])
         .arg(&template_path)
