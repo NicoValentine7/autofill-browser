@@ -33,7 +33,7 @@ const KEY_CHECK_VALUE: &str = "agent-vault-key-check:v1";
 const ALGORITHM: &str = "PBKDF2-SHA256/AES-GCM";
 const KDF_NAME: &str = "PBKDF2-SHA256";
 const MAX_SECRET_BYTES: usize = 128 * 1024;
-const LOCK_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+const LOCK_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 const LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

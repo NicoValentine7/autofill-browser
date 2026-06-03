@@ -14,6 +14,9 @@ Common flows:
   agvt add openai
       Save OPENAI_API_KEY for later command injection.
 
+  agvt import-env --dry-run
+      Preview importable preset and secret-like env vars without printing values.
+
   agvt run cloudflare -- npx wrangler whoami
       Run a command with Cloudflare env vars injected.
 
@@ -44,6 +47,15 @@ Commands:
   agvt inject [--redact-output] [template-file|-]
       Replace agvt:// refs in a template and print the result.
       Use --redact-output to preview without printing secret values.
+
+  agvt import-env [preset...] [--dry-run] [--env-file FILE] [--preset-only] [--json]
+      Import matching env vars into the vault without printing values.
+      By default, reads the current process environment plus local .env.local,
+      .env.development, .env.production, and .env when present.
+      Built-in presets use their provider item names; other secret-like names
+      such as *_TOKEN, *_API_KEY, *_SECRET, *_SECRET_KEY,
+      *_SERVICE_ROLE_KEY, *_PASSWORD, and DATABASE_URL are imported as custom
+      api-token items unless --preset-only is set.
 
   agvt totp <item-or-ref> [--digits 6|7|8] [--period SECONDS]
       Generate a TOTP code from a totp item.
@@ -94,6 +106,9 @@ const HELP_JA: &str = r#"agvt - Agent Vault CLI
   agvt add openai
       OPENAI_API_KEY を保存して、あとでコマンドに注入できるようにする
 
+  agvt import-env --dry-run
+      importできるpreset/env名だけを見る。secret値は表示しない
+
   agvt run cloudflare -- npx wrangler whoami
       Cloudflare用の環境変数を注入してコマンドを実行する
 
@@ -124,6 +139,15 @@ const HELP_JA: &str = r#"agvt - Agent Vault CLI
   agvt inject [--redact-output] [template-file|-]
       template内の agvt:// 参照を置換して出力する
       secret値を出さずに確認する場合は --redact-output を使う
+
+  agvt import-env [preset...] [--dry-run] [--env-file FILE] [--preset-only] [--json]
+      env varをVaultへ取り込む。secret値は表示しない
+      defaultでは現在の環境変数に加えて、存在する .env.local、
+      .env.development、.env.production、.env を読む
+      built-in presetはprovider item名で保存する。それ以外の *_TOKEN、
+      *_API_KEY、*_SECRET、*_SECRET_KEY、*_SERVICE_ROLE_KEY、*_PASSWORD、
+      DATABASE_URL はcustom api-tokenとして保存する
+      custom importを避ける場合は --preset-only を使う
 
   agvt totp <item-or-ref> [--digits 6|7|8] [--period SECONDS]
       totp itemから現在のTOTP codeを生成する

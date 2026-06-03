@@ -233,6 +233,130 @@ fn presets_json_lists_provider_presets() {
 }
 
 #[test]
+fn import_env_dry_run_reads_local_env_without_printing_values() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+    fs::write(
+        directory.path().join(".env.local"),
+        [
+            "OPENAI_API_KEY=openai_dummy_secret",
+            "STRIPE_SECRET_KEY=stripe_dummy_secret",
+            "DATABASE_URL=postgres://dummy_secret@localhost/app",
+            "NEXT_PUBLIC_SUPABASE_ANON_KEY=public_value",
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_agvt"))
+        .arg("--vault-path")
+        .arg(&vault_path)
+        .args(["import-env", "--dry-run"])
+        .current_dir(directory.path())
+        .env_clear()
+        .env("AGVT_PASSPHRASE", "test-passphrase-with-enough-length")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("would import openai\tpreset\tOPENAI_API_KEY"));
+    assert!(stdout.contains("would import stripe-secret-key\tcustom\tSTRIPE_SECRET_KEY"));
+    assert!(stdout.contains("would import database-url\tcustom\tDATABASE_URL"));
+    assert!(!stdout.contains("openai_dummy_secret"));
+    assert!(!stdout.contains("stripe_dummy_secret"));
+    assert!(!stdout.contains("public_value"));
+    assert!(!vault_path.exists());
+}
+
+#[test]
+fn import_env_saves_preset_and_custom_values() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+    fs::write(
+        directory.path().join(".env.local"),
+        [
+            "CLOUDFLARE_API_TOKEN=cloudflare_dummy_secret",
+            "CLOUDFLARE_ACCOUNT_ID=cloudflare_account_id",
+            "ADMIN_SECRET=admin_dummy_secret",
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_agvt"))
+        .arg("--vault-path")
+        .arg(&vault_path)
+        .args(["import-env"])
+        .current_dir(directory.path())
+        .env_clear()
+        .env("AGVT_PASSPHRASE", "test-passphrase-with-enough-length")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("imported cloudflare\tpreset\tCLOUDFLARE_API_TOKEN,CLOUDFLARE_ACCOUNT_ID")
+    );
+    assert!(stdout.contains("imported admin-secret\tcustom\tADMIN_SECRET"));
+
+    let raw_vault = fs::read_to_string(&vault_path).unwrap();
+    assert!(!raw_vault.contains("cloudflare_dummy_secret"));
+    assert!(!raw_vault.contains("cloudflare_account_id"));
+    assert!(!raw_vault.contains("admin_dummy_secret"));
+
+    let token_output = agvt_command(&vault_path)
+        .args(["read", "agvt://cloudflare/token"])
+        .output()
+        .unwrap();
+    assert!(
+        token_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&token_output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&token_output.stdout).trim(),
+        "cloudflare_dummy_secret"
+    );
+
+    let account_output = agvt_command(&vault_path)
+        .args(["read", "agvt://cloudflare/account-id"])
+        .output()
+        .unwrap();
+    assert!(
+        account_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&account_output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&account_output.stdout).trim(),
+        "cloudflare_account_id"
+    );
+
+    let custom_output = agvt_command(&vault_path)
+        .args(["read", "agvt://admin-secret/token"])
+        .output()
+        .unwrap();
+    assert!(
+        custom_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&custom_output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&custom_output.stdout).trim(),
+        "admin_dummy_secret"
+    );
+}
+
+#[test]
 fn writes_relative_vault_path_without_parent_directory() {
     let directory = tempfile::tempdir().unwrap();
 
