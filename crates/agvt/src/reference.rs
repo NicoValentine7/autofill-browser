@@ -92,7 +92,7 @@ pub fn canonical_field_name(value: &str) -> Result<String> {
     })
 }
 
-pub fn parse_secret_ref(value: &str, default_vault: &str) -> Result<SecretRef> {
+pub fn parse_secret_ref(value: &str, _default_vault: &str) -> Result<SecretRef> {
     let trimmed = value.trim();
     if !trimmed.starts_with(SECRET_REF_PREFIX) {
         return Err(AgvtError::new("secret reference must start with agvt://."));
@@ -101,18 +101,16 @@ pub fn parse_secret_ref(value: &str, default_vault: &str) -> Result<SecretRef> {
     let path = &trimmed[SECRET_REF_PREFIX.len()..];
     let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
     match parts.as_slice() {
-        [item, field] => Ok(SecretRef {
-            vault: validate_name(default_vault, "vault")?,
-            item: validate_name(item, "item")?,
-            field: canonical_field_name(field)?,
-        }),
+        [_item, _field] => Err(AgvtError::new(
+            "short secret references are disabled; use agvt://vault/item/field.",
+        )),
         [vault, item, field] => Ok(SecretRef {
             vault: validate_name(vault, "vault")?,
             item: validate_name(item, "item")?,
             field: canonical_field_name(field)?,
         }),
         _ => Err(AgvtError::new(
-            "secret reference must be agvt://item/field or agvt://vault/item/field.",
+            "secret reference must be agvt://vault/item/field.",
         )),
     }
 }
@@ -153,7 +151,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_full_and_short_references() {
+    fn parses_full_references_and_rejects_short_references() {
         assert_eq!(
             parse_secret_ref("agvt://prod/cloudflare/token", DEFAULT_VAULT_NAME).unwrap(),
             SecretRef {
@@ -162,21 +160,14 @@ mod tests {
                 field: "token".to_owned()
             }
         );
-        assert_eq!(
-            parse_secret_ref("agvt://cloudflare/service-url", DEFAULT_VAULT_NAME).unwrap(),
-            SecretRef {
-                vault: "dev".to_owned(),
-                item: "cloudflare".to_owned(),
-                field: "serviceUrl".to_owned()
-            }
-        );
+        assert!(parse_secret_ref("agvt://cloudflare/service-url", DEFAULT_VAULT_NAME).is_err());
     }
 
     #[test]
     fn finds_secret_refs_inside_templates() {
         assert_eq!(
-            find_secret_refs("TOKEN=agvt://cloudflare/token\nOTHER=1"),
-            vec!["agvt://cloudflare/token"]
+            find_secret_refs("TOKEN=agvt://global/cloudflare/token\nOTHER=1"),
+            vec!["agvt://global/cloudflare/token"]
         );
     }
 }

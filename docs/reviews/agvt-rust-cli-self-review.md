@@ -7,7 +7,7 @@ Date: 2026-06-02
 Reviewed the Rust `agvt` implementation for the Agent Vault development-token workflow:
 
 - 1Password-like secret references: `agvt://vault/item/field`
-- Default `dev` vault short form: `agvt://item/field`
+- Explicit vault references after ADR 0010: `agvt://global/item/field` or `agvt://repo/item/field`
 - `add`, `read`, `run`, `inject`, `totp`, `keychain`, `cloudflare create-token`, `ls`, `delete`, and `presets`
 - API token, TOTP, SSH key, login, custom secret item kinds
 - macOS Keychain passphrase lookup
@@ -17,7 +17,7 @@ Reviewed the Rust `agvt` implementation for the Agent Vault development-token wo
 ## UX Review
 
 - The common Cloudflare flow is short: `agvt add cloudflare` and `agvt run cloudflare -- <command>`.
-- 1Password-like references can be used directly in env values: `CLOUDFLARE_API_TOKEN=agvt://cloudflare/token agvt run -- <command>`.
+- 1Password-like references can be used directly in env values: `CLOUDFLARE_API_TOKEN=agvt://global/cloudflare/token agvt run -- <command>`.
 - `inject` supports template replacement for `.env.template` style files.
 - `pnpm agvt ...` remains available for repo-local use, while `pnpm install:agvt` provides the direct `agvt` command.
 - `agvt keychain set` removes the need to export `AGVT_PASSPHRASE` in each shell session on macOS.
@@ -38,7 +38,7 @@ Reviewed the Rust `agvt` implementation for the Agent Vault development-token wo
 ## Compatibility Review
 
 - The Rust CLI keeps the previous Agent Vault file schema.
-- The default `dev` vault maps to the existing item key, so earlier `cloudflare` and `github` items remain readable as `agvt://cloudflare/token`.
+- The default `dev` vault maps to the existing item key for item-name compatibility, but short secret references are disabled after ADR 0010.
 - Non-default vaults use `vault:item` storage keys.
 - The older Node compatibility CLI continues to support `api-token` items; Rust-only non-token kinds are outside that compatibility surface.
 

@@ -90,7 +90,7 @@ pnpm dev:extension
 
 #### Agent Vault for Codex / Claude Code
 
-Codex や Claude Code から開発用 API token を使う場合は、Rust CLI の `agvt` を使います。デフォルトの保存先は `.local/agent-vault.json` で、`.local/` はgit管理外です。token本体、service URL、account、account ID、notesは暗号化payloadに入り、`agvt ls` ではvault名・item名・kind・label・更新日時だけを出します。
+Codex や Claude Code から開発用 API token を使う場合は、Rust CLI の `agvt` を使います。Agent Vault は hybrid 方針です。共通tokenは global vault (`~/.local/share/agvt/agent-vault.json`、または `AGVT_GLOBAL_PATH`) に保存し、repo固有tokenは repo-local vault (`.local/agent-vault.json`、または `AGVT_PATH`) に保存します。`.local/` はgit管理外です。token本体、service URL、account、account ID、notesは暗号化payloadに入り、`agvt ls` ではvault名・item名・kind・label・更新日時だけを出します。
 
 ```bash
 export AGVT_PASSPHRASE="24文字以上のローカルpassphrase"
@@ -98,29 +98,29 @@ pnpm agvt keychain set
 
 export CLOUDFLARE_API_TOKEN="<cloudflare-api-token>"
 export CLOUDFLARE_ACCOUNT_ID="<cloudflare-account-id>"
-pnpm agvt add cloudflare
-pnpm agvt run cloudflare -- npx wrangler whoami
+pnpm agvt add agvt://global/cloudflare/token
+pnpm agvt --vault global run cloudflare -- npx wrangler whoami
 
 export OPENAI_API_KEY="<openai-api-key>"
-pnpm agvt add openai
-pnpm agvt run openai -- sh -c 'test -n "$OPENAI_API_KEY"'
+pnpm agvt add agvt://global/openai/token
+pnpm agvt --vault global run openai -- sh -c 'test -n "$OPENAI_API_KEY"'
 
 pnpm agvt import-env --dry-run
 pnpm agvt import-env
 
-GITHUB_TOKEN=agvt://github/token pnpm agvt run -- gh auth status
-pnpm agvt read agvt://cloudflare/account-id
-pnpm agvt read agvt://cloudflare/token
+GITHUB_TOKEN=agvt://global/github/token pnpm agvt run -- gh auth status
+pnpm agvt read agvt://global/cloudflare/account-id
+pnpm agvt read agvt://global/cloudflare/token
 pnpm agvt inject --redact-output .env.template
 ```
 
-`cloudflare`、`openai`、`anthropic`、`vercel`、`stripe`、`slack`、`github` はプリセットです。`pnpm agvt presets --json` で確認できます。`cloudflare` は `CLOUDFLARE_API_TOKEN` に加えて、保存済みなら `CLOUDFLARE_ACCOUNT_ID` も `run` で渡します。その他のprovider presetは既存tokenを保存・注入するだけで、token作成・更新・検証・権限探索はしません。`agvt://cloudflare/token` のような短縮secret referenceは `agvt://dev/cloudflare/token` として扱います。カスタムtokenは `--from-stdin` か `--from-env TOKEN_ENV_NAME` を使い、tokenをコマンド引数に直接載せないでください。
+`cloudflare`、`openai`、`anthropic`、`vercel`、`stripe`、`slack`、`github` はプリセットです。`pnpm agvt presets --json` で確認できます。`cloudflare` は `CLOUDFLARE_API_TOKEN` に加えて、保存済みなら `CLOUDFLARE_ACCOUNT_ID` も `run` で渡します。その他のprovider presetは既存tokenを保存・注入するだけで、token作成・更新・検証・権限探索はしません。`agvt://cloudflare/token` のような短縮secret referenceは無効です。`agvt://global/cloudflare/token` や `agvt://repo/cloudflare/token` のようにvault名を明示してください。カスタムtokenは `--from-stdin` か `--from-env TOKEN_ENV_NAME` を使い、tokenをコマンド引数に直接載せないでください。
 
 `import-env` は、現在の環境変数と、存在する `.env.local` / `.env.development` / `.env.production` / `.env` から、プリセットやsecretっぽい名前の値をVaultへ取り込みます。値は表示しません。まず `--dry-run` で取り込み候補のenv名だけを確認できます。custom importでは `*_TOKEN`、`*_API_KEY`、`*_SECRET`、`*_SECRET_KEY`、`*_SERVICE_ROLE_KEY`、`*_PASSWORD`、`DATABASE_URL` を拾い、`NEXT_PUBLIC_*` / `PUBLIC_*` は除外します。custom importを避けたい場合は `--preset-only` を使います。
 
 `add` / `delete` はVault file単位のlockを取り、同じVaultへ複数の `agvt` processが同時に書き込んでもlast-write-winsでitemを失わないようにします。`inject` はsecret値を標準出力へ展開するため、確認だけなら `--redact-output` を使ってください。
 
-`AGVT_PASSPHRASE` が未設定の場合、macOSでは `agvt keychain set` で保存したpassphraseをKeychainから読みます。Keychainを使わない場合は `AGVT_KEYCHAIN=0` を付けます。
+`AGVT_PASSPHRASE` が未設定の場合、macOSでは `agvt keychain set` で保存したpassphraseをKeychainから読みます。Keychain accountはvault path単位です。global vault のpassphraseを明示的に登録する場合は `--vault-path "$HOME/.local/share/agvt/agent-vault.json"` を付けます。Keychainを使わない場合は `AGVT_KEYCHAIN=0` を付けます。
 
 ```bash
 printf '%s' "$AGVT_PASSPHRASE" | pnpm agvt keychain set --from-stdin
@@ -132,15 +132,15 @@ pnpm agvt ls
 `run` は指定したsecretだけを子プロセスへ渡し、`AGVT_PASSPHRASE` と `AUTOFILL_AGENT_VAULT_PASSPHRASE` は子プロセス環境から外します。漏洩を減らしたい時は `--clean-env` と `--redact-output` を使います。macOSでは `--sandbox no-network` でネットワーク送信をベストエフォートで塞げます。
 
 ```bash
-pnpm agvt run cloudflare --clean-env --redact-output -- npx wrangler whoami
-pnpm agvt run github --sandbox no-network -- gh auth status
+pnpm agvt --vault global run cloudflare --clean-env --redact-output -- npx wrangler whoami
+pnpm agvt --vault global run github --sandbox no-network -- gh auth status
 ```
 
 Cloudflare tokenは、発行権限を持つfactory tokenとpolicy fileがあれば `agvt` から作成して、そのまま暗号化保存できます。policy bodyはCloudflare APIの `/user/tokens` 作成形式に合わせます。自動発行はCloudflare専用の明示フローとして維持し、OpenAI、Anthropic、Vercel、Stripe、Slack、GitHubでは既存tokenの保存と注入だけを扱います。
 
 ```bash
 export CLOUDFLARE_TOKEN_FACTORY_TOKEN="<token-create-capable-token>"
-pnpm agvt cloudflare create-token cloudflare \
+pnpm agvt cloudflare create-token agvt://global/cloudflare/token \
   --name "agvt cloudflare dev" \
   --account-id "$CLOUDFLARE_ACCOUNT_ID" \
   --policy-file docs/agvt-cloudflare-token-policy.example.json
@@ -149,22 +149,22 @@ pnpm agvt cloudflare create-token cloudflare \
 API token以外のkindも保存できます。
 
 ```bash
-pnpm agvt add github-totp --kind totp --from-env TOTP_SECRET --field issuer=GitHub --account nico
-pnpm agvt totp github-totp
+pnpm agvt add agvt://repo/github-totp/secret --kind totp --from-env TOTP_SECRET --field issuer=GitHub --account nico
+pnpm agvt totp agvt://repo/github-totp/secret
 
-printf '%s' "$SSH_PRIVATE_KEY" | pnpm agvt add github-ssh --kind ssh-key --field-stdin private-key --field public-key="$SSH_PUBLIC_KEY"
-pnpm agvt read agvt://github-ssh/private-key
+printf '%s' "$SSH_PRIVATE_KEY" | pnpm agvt add agvt://repo/github-ssh/private-key --kind ssh-key --field-stdin private-key --field public-key="$SSH_PUBLIC_KEY"
+pnpm agvt read agvt://repo/github-ssh/private-key
 ```
 
 単体コマンドとして使う場合は以下で入れます。
 
 ```bash
 pnpm install:agvt
-agvt add cloudflare
-agvt run cloudflare -- npx wrangler whoami
+agvt add agvt://global/cloudflare/token
+agvt --vault global run cloudflare -- npx wrangler whoami
 ```
 
-Chrome popupのAPI Token Vaultは、native hostを入れると保存時に同じtokenをAgent Vaultへも保存できます。popupの「Agent Vault item」に `cloudflare` などを入れて保存してください。host未インストール時はSecure Vault保存だけ続行します。
+Chrome popupのAPI Token Vaultは、native hostを入れると保存時に同じtokenをAgent Vaultへも保存できます。現時点のpopup bridgeは `cloudflare` のようなitem名を渡すため、既定ではrepo-local側へ保存します。host未インストール時はSecure Vault保存だけ続行します。
 
 ```bash
 pnpm install:agvt
