@@ -37,8 +37,9 @@ Commands:
       Presets: cloudflare, github. Custom: --env TOKEN=agvt://item/token.
       Safety: --clean-env --redact-output --sandbox no-network.
 
-  agvt inject [template-file|-]
+  agvt inject [--redact-output] [template-file|-]
       Replace agvt:// refs in a template and print the result.
+      Use --redact-output to preview without printing secret values.
 
   agvt totp <item-or-ref> [--digits 6|7|8] [--period SECONDS]
       Generate a TOTP code from a totp item.
@@ -111,8 +112,9 @@ const HELP_JA: &str = r#"agvt - Agent Vault CLI
       preset: cloudflare, github。custom: --env TOKEN=agvt://item/token
       safety: --clean-env --redact-output --sandbox no-network
 
-  agvt inject [template-file|-]
+  agvt inject [--redact-output] [template-file|-]
       template内の agvt:// 参照を置換して出力する
+      secret値を出さずに確認する場合は --redact-output を使う
 
   agvt totp <item-or-ref> [--digits 6|7|8] [--period SECONDS]
       totp itemから現在のTOTP codeを生成する

@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io::ErrorKind;
 use std::num::NonZeroU32;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -30,6 +33,8 @@ const KEY_CHECK_VALUE: &str = "agent-vault-key-check:v1";
 const ALGORITHM: &str = "PBKDF2-SHA256/AES-GCM";
 const KDF_NAME: &str = "PBKDF2-SHA256";
 const MAX_SECRET_BYTES: usize = 128 * 1024;
+const LOCK_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+const LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Kdf {
@@ -106,6 +111,17 @@ pub struct ListedItem {
     pub kind: String,
     pub label: String,
     pub updated_at: String,
+}
+
+struct VaultWriteLock {
+    path: PathBuf,
+    _file: File,
+}
+
+impl Drop for VaultWriteLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
 }
 
 fn random_bytes(length: usize) -> Result<Vec<u8>> {
@@ -406,9 +422,7 @@ pub fn load_vault(path: &Path) -> Result<Option<VaultFile>> {
 
 pub fn save_vault(path: &Path, vault: &VaultFile) -> Result<()> {
     validate_vault(vault)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    ensure_parent_dir(path)?;
     let temporary_path = path.with_extension(format!("tmp-{}", std::process::id()));
     fs::write(
         &temporary_path,
@@ -417,6 +431,59 @@ pub fn save_vault(path: &Path, vault: &VaultFile) -> Result<()> {
     set_private_permissions(&temporary_path)?;
     fs::rename(&temporary_path, path)?;
     set_private_permissions(path)?;
+    Ok(())
+}
+
+fn vault_lock_path(path: &Path) -> PathBuf {
+    let lock_name = path
+        .file_name()
+        .map(|file_name| format!("{}.lock", file_name.to_string_lossy()))
+        .unwrap_or_else(|| "agent-vault.lock".to_owned());
+    path.with_file_name(lock_name)
+}
+
+fn acquire_vault_write_lock(path: &Path) -> Result<VaultWriteLock> {
+    let lock_path = vault_lock_path(path);
+    ensure_parent_dir(&lock_path)?;
+
+    let started_at = Instant::now();
+    loop {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(file) => {
+                if let Err(error) = set_private_permissions(&lock_path) {
+                    let _ = fs::remove_file(&lock_path);
+                    return Err(error);
+                }
+                return Ok(VaultWriteLock {
+                    path: lock_path,
+                    _file: file,
+                });
+            }
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                if started_at.elapsed() >= LOCK_WAIT_TIMEOUT {
+                    return Err(AgvtError::new(format!(
+                        "Agent Vault is locked by another writer: {}",
+                        lock_path.display()
+                    )));
+                }
+                thread::sleep(LOCK_RETRY_DELAY);
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn ensure_parent_dir(path: &Path) -> Result<()> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)?;
+    }
     Ok(())
 }
 
@@ -479,6 +546,7 @@ pub fn upsert_api_token(path: &Path, passphrase: &str, input: UpsertTokenInput) 
 }
 
 pub fn upsert_secret(path: &Path, passphrase: &str, input: UpsertSecretInput) -> Result<()> {
+    let _lock = acquire_vault_write_lock(path)?;
     let mut vault = match load_vault(path)? {
         Some(vault) => vault,
         None => create_vault(passphrase)?,
@@ -566,6 +634,7 @@ pub fn read_secret_field(path: &Path, passphrase: &str, secret_ref: &SecretRef) 
 }
 
 pub fn delete_item(path: &Path, passphrase: &str, secret_ref: &SecretRef) -> Result<()> {
+    let _lock = acquire_vault_write_lock(path)?;
     let mut vault =
         load_vault(path)?.ok_or_else(|| AgvtError::new("Agent Vault file does not exist."))?;
     unlock_vault(&vault, passphrase)?;
