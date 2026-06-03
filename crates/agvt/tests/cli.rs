@@ -416,6 +416,125 @@ fn import_env_saves_preset_and_custom_values() {
 }
 
 #[test]
+fn prepare_diagnoses_manifest_requirements_without_printing_values() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+    fs::write(
+        directory.path().join("agvt.toml"),
+        [
+            "[prepare]",
+            "presets = [\"cloudflare\", \"openai\"]",
+            "",
+            "[[prepare.secrets]]",
+            "item = \"admin-secret\"",
+            "field = \"token\"",
+            "env = \"ADMIN_SECRET\"",
+            "required = true",
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+    fs::write(
+        directory.path().join(".env.local"),
+        [
+            "OPENAI_API_KEY=openai_dummy_secret",
+            "ADMIN_SECRET=admin_dummy_secret",
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_agvt"))
+        .arg("--vault-path")
+        .arg(&vault_path)
+        .args(["prepare", "--dry-run"])
+        .current_dir(directory.path())
+        .env_clear()
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("manifest: agvt.toml"));
+    assert!(stdout.contains("vault: missing"));
+    assert!(stdout.contains("importable:"));
+    assert!(stdout.contains("openai.token\trequired\tOPENAI_API_KEY"));
+    assert!(stdout.contains("admin-secret.token\trequired\tADMIN_SECRET"));
+    assert!(stdout.contains("missing:"));
+    assert!(stdout.contains("cloudflare.token\trequired\tCLOUDFLARE_API_TOKEN"));
+    assert!(stdout.contains("agvt import-env --dry-run"));
+    assert!(stdout.contains("agvt add cloudflare --from-stdin"));
+    assert!(!stdout.contains("openai_dummy_secret"));
+    assert!(!stdout.contains("admin_dummy_secret"));
+    assert!(!vault_path.exists());
+}
+
+#[test]
+fn prepare_json_reports_present_vault_fields_without_printing_values() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+
+    let add_output = agvt_command(&vault_path)
+        .args(["add", "cloudflare"])
+        .env("CLOUDFLARE_API_TOKEN", "cloudflare_dummy_secret")
+        .env("CLOUDFLARE_ACCOUNT_ID", "cloudflare_account_id")
+        .output()
+        .unwrap();
+    assert!(
+        add_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_agvt"))
+        .arg("--vault-path")
+        .arg(&vault_path)
+        .args([
+            "prepare",
+            "cloudflare",
+            "--json",
+            "--no-manifest",
+            "--no-env-file",
+        ])
+        .current_dir(directory.path())
+        .env_clear()
+        .env("AGVT_PASSPHRASE", "test-passphrase-with-enough-length")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("cloudflare_dummy_secret"));
+    assert!(!stdout.contains("cloudflare_account_id"));
+
+    let parsed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(parsed["vault"]["status"], "ready");
+    let requirements = parsed["requirements"].as_array().unwrap();
+    let token = requirements
+        .iter()
+        .find(|requirement| requirement["item"] == "cloudflare" && requirement["field"] == "token")
+        .unwrap();
+    assert_eq!(token["status"], "present");
+    assert_eq!(token["source"], "vault");
+    let account_id = requirements
+        .iter()
+        .find(|requirement| {
+            requirement["item"] == "cloudflare" && requirement["field"] == "accountId"
+        })
+        .unwrap();
+    assert_eq!(account_id["status"], "present");
+    assert_eq!(parsed["suggestedCommands"].as_array().unwrap().len(), 0);
+}
+
+#[test]
 fn writes_relative_vault_path_without_parent_directory() {
     let directory = tempfile::tempdir().unwrap();
 
