@@ -9,7 +9,7 @@
 **現有資産**:
 - `crates/agvt/` — Rust CLI 約4200行。モジュール: main.rs(1437), vault.rs(783), prepare.rs(648), keychain.rs(374), help.rs(279), cloudflare.rs(260), reference.rs(173), totp.rs(96), presets.rs(108), error.rs(36)。テストは `cd crates/agvt && cargo test`。TOTP 実装済み。hybrid vault（global: `~/.local/share/agvt/agent-vault.json` / repo: `.local/agent-vault.json`）、参照形式 `agvt://<vault>/<item>/<field>`、macOS Keychain 統合、`run --redact-output`、`prepare` 診断
 - **注意: `agvt inject` は既存コマンド**（main.rs:88 → handle_inject）。テンプレート中の secret ref を解決して**生の秘密値を stdout に出す**用途。本計画の環境配線コマンドは名前衝突とセキュリティ混同を避けるため **`agvt wire`** とする
-- `docs/adr/` — 実ファイル12本。**0010 が2本ある番号衝突あり**（hybrid-global-and-repo-vaults と prepare-dry-run-diagnostics）。主要: Zero-Knowledge Vault(0002)、Recovery Phrase ラップ(0003)、agent-facing 原則(0011)。**新規設計は必ず既存 ADR と整合させる**
+- `docs/adr/` — 主要: Zero-Knowledge Vault(0002)、Recovery Phrase ラップ(0003)、agent-facing 原則(0011)、Agent Home 3層(0013)、感度ティア(0014)。旧 0010 番号衝突は U0 で解消済み（prepare-dry-run は 0012 に renumber）。**新規設計は必ず既存 ADR と整合させる**
 - `apps/log-worker/` — Cloudflare Workers + D1。構成の雛形: `wrangler.jsonc`・`migrations/`・`tests/`
 - `apps/chrome-extension/` — Plasmo 製、agvt への native messaging bridge あり（Phase 1 スコープ外）
 - CI は**未整備**（`.github/workflows/` なし）→ U0b で整備する
