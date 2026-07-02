@@ -1,12 +1,17 @@
+mod audit;
+mod charter;
 mod cloudflare;
+mod dossier;
 mod error;
 mod help;
 mod keychain;
+mod mcp;
 mod prepare;
 mod presets;
 mod reference;
 mod totp;
 mod vault;
+mod wire;
 
 use std::collections::BTreeMap;
 use std::env;
@@ -91,14 +96,19 @@ fn run() -> Result<()> {
         }
         "add" | "put" => handle_add(&options),
         "read" | "get" => handle_read(&options),
+        "dossier" => dossier::handle_dossier(&options),
         "run" => handle_run(&options),
         "inject" => handle_inject(&options),
         "import-env" => handle_import_env(&options),
         "prepare" => handle_prepare(&options),
         "totp" => handle_totp(&options),
         "keychain" => handle_keychain(&options),
+        "mcp" => mcp::handle_mcp(&options),
         "cloudflare" => handle_cloudflare(&options),
         "ls" | "list" => handle_list(&options),
+        "audit" => handle_audit(&options),
+        "charter" => charter::handle_charter(&options.args),
+        "wire" => wire::handle_wire(&options),
         "delete" | "rm" => handle_delete(&options),
         "presets" => handle_presets(&options.args),
         "version" | "--version" | "-V" => {
@@ -209,6 +219,14 @@ fn handle_add(options: &GlobalOptions) -> Result<()> {
                 fields,
             },
         )?;
+        audit::record(
+            "add",
+            &reference::SecretRef {
+                field: saved_field.to_owned(),
+                ..secret_ref.clone()
+            },
+            "agvt",
+        );
         println!(
             "saved agvt://{}/{}/{}",
             secret_ref.vault, secret_ref.item, saved_field
@@ -247,6 +265,14 @@ fn handle_add(options: &GlobalOptions) -> Result<()> {
             notes: add_options.notes,
         },
     )?;
+    audit::record(
+        "add",
+        &reference::SecretRef {
+            field: "token".to_owned(),
+            ..secret_ref.clone()
+        },
+        "agvt",
+    );
     println!(
         "saved agvt://{}/{}/token",
         secret_ref.vault, secret_ref.item
@@ -482,7 +508,7 @@ fn insert_optional_field(
     Ok(())
 }
 
-fn read_stdin() -> Result<String> {
+pub(crate) fn read_stdin() -> Result<String> {
     let mut value = String::new();
     io::stdin().read_to_string(&mut value)?;
     Ok(value)
@@ -521,6 +547,7 @@ fn handle_read(options: &GlobalOptions) -> Result<()> {
     let vault_path = path_for_secret_ref(options, &secret_ref);
     let passphrase = require_passphrase_for_path(vault_path)?;
     let value = read_secret_field(vault_path, &passphrase, &secret_ref)?;
+    audit::record("read", &secret_ref, "agvt");
     if decode {
         if value.trim().is_empty() {
             return Err(AgvtError::new(format!(
@@ -557,6 +584,9 @@ fn handle_run(options: &GlobalOptions) -> Result<()> {
         }
     }
 
+    // Audit caller: the program that receives the injected secrets.
+    // Only the program name is recorded, never its arguments.
+    let caller = run_options.command[0].clone();
     let mut redactions = Vec::new();
     for mapping in run_options.mappings {
         let vault_path = path_for_secret_ref(options, &mapping.secret_ref);
@@ -571,6 +601,7 @@ fn handle_run(options: &GlobalOptions) -> Result<()> {
                 mapping.env_name
             )));
         }
+        audit::record("run", &mapping.secret_ref, &caller);
         redactions.push(value.clone());
         child_env.insert(mapping.env_name, value);
     }
@@ -578,6 +609,7 @@ fn handle_run(options: &GlobalOptions) -> Result<()> {
         options,
         &mut child_env,
         &options.default_vault,
+        &caller,
     )?);
     child_env.remove(AGVT_PASSPHRASE_ENV);
     child_env.remove(LEGACY_PASSPHRASE_ENV);
@@ -694,6 +726,7 @@ fn resolve_environment_secret_refs(
     options: &GlobalOptions,
     child_env: &mut BTreeMap<String, String>,
     default_vault: &str,
+    caller: &str,
 ) -> Result<Vec<String>> {
     let keys: Vec<String> = child_env
         .iter()
@@ -707,6 +740,7 @@ fn resolve_environment_secret_refs(
             let vault_path = path_for_secret_ref(options, &secret_ref);
             let passphrase = require_passphrase_for_path(vault_path)?;
             let value = read_secret_field(vault_path, &passphrase, &secret_ref)?;
+            audit::record("run", &secret_ref, caller);
             redactions.push(value.clone());
             child_env.insert(key, value);
         }
@@ -844,7 +878,7 @@ fn handle_import_env(options: &GlobalOptions) -> Result<()> {
             vault_path,
             &passphrase,
             UpsertTokenInput {
-                secret_ref,
+                secret_ref: secret_ref.clone(),
                 token: candidate.token.clone(),
                 label: Some(candidate.label.clone()),
                 service_url: candidate.service_url.clone(),
@@ -858,6 +892,7 @@ fn handle_import_env(options: &GlobalOptions) -> Result<()> {
                 )),
             },
         )?;
+        audit::record("import-env", &secret_ref, "agvt");
     }
     print_import_env_summary(&candidates, false, import_options.as_json)
 }
@@ -1118,6 +1153,7 @@ fn handle_inject(options: &GlobalOptions) -> Result<()> {
         let vault_path = path_for_secret_ref(options, &secret_ref);
         let passphrase = require_passphrase_for_path(vault_path)?;
         let value = read_secret_field(vault_path, &passphrase, &secret_ref)?;
+        audit::record("inject", &secret_ref, "agvt");
         let replacement = if inject_options.redact_output {
             "[REDACTED]"
         } else {
@@ -1456,11 +1492,54 @@ fn handle_delete(options: &GlobalOptions) -> Result<()> {
     let vault_path = path_for_secret_ref(options, &secret_ref);
     let passphrase = require_passphrase_for_path(vault_path)?;
     delete_item(vault_path, &passphrase, &secret_ref)?;
+    audit::record("delete", &secret_ref, "agvt");
     println!(
         "deleted agvt://{}/{}/token",
         secret_ref.vault, secret_ref.item
     );
     Ok(())
+}
+
+fn handle_audit(options: &GlobalOptions) -> Result<()> {
+    let Some(command) = options.args.first().map(String::as_str) else {
+        return Err(AgvtError::new("audit requires ls."));
+    };
+    match command {
+        "ls" | "list" => {
+            let as_json = options.args[1..].iter().any(|arg| arg == "--json");
+            let entries = audit::list_entries(&audit::audit_log_path())?;
+            if as_json {
+                let json_entries: Vec<_> = entries
+                    .iter()
+                    .map(|entry| {
+                        serde_json::json!({
+                            "ts": entry.ts,
+                            "op": entry.op,
+                            "ref": entry.reference,
+                            "caller": entry.caller
+                        })
+                    })
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({ "entries": json_entries }))?
+                );
+                return Ok(());
+            }
+            if entries.is_empty() {
+                println!("No audit entries.");
+                return Ok(());
+            }
+            for entry in entries {
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    entry.ts, entry.op, entry.reference, entry.caller
+                );
+            }
+            Ok(())
+        }
+        _ => Err(AgvtError::new("audit requires ls.")),
+    }
 }
 
 fn handle_presets(args: &[String]) -> Result<()> {

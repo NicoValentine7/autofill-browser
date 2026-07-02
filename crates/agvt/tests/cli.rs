@@ -9,7 +9,9 @@ fn agvt_command(vault_path: &std::path::Path) -> Command {
     command
         .arg("--vault-path")
         .arg(vault_path)
-        .env("AGVT_PASSPHRASE", "test-passphrase-with-enough-length");
+        .env("AGVT_PASSPHRASE", "test-passphrase-with-enough-length")
+        // Keep test audit entries out of the real user audit log.
+        .env("AGVT_AUDIT_PATH", vault_path.with_file_name("audit.jsonl"));
     command
 }
 
@@ -722,6 +724,601 @@ fn inject_replaces_secret_refs() {
 }
 
 #[test]
+fn audit_log_records_vault_operations_append_only_without_secret_values() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+    let audit_path = directory.path().join("audit.jsonl");
+    let template_path = directory.path().join("template.env");
+
+    // add
+    let add_output = agvt_command(&vault_path)
+        .args(["add", "cloudflare"])
+        .env("CLOUDFLARE_API_TOKEN", "cloudflare_dummy_secret")
+        .output()
+        .unwrap();
+    assert!(
+        add_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+    let after_add = fs::read_to_string(&audit_path).unwrap();
+    assert_eq!(after_add.lines().count(), 1);
+    assert!(after_add.contains("\"op\":\"add\""));
+    assert!(after_add.contains("agvt://dev/cloudflare/token"));
+
+    // read (append-only: previous content stays byte-identical)
+    let read_output = agvt_command(&vault_path)
+        .args(["read", "agvt://dev/cloudflare/token"])
+        .output()
+        .unwrap();
+    assert!(read_output.status.success());
+    let after_read = fs::read_to_string(&audit_path).unwrap();
+    assert!(after_read.starts_with(&after_add));
+    assert_eq!(after_read.lines().count(), 2);
+    assert!(after_read.contains("\"op\":\"read\""));
+
+    // run with an explicit --env mapping
+    let run_output = agvt_command(&vault_path)
+        .args([
+            "run",
+            "--env",
+            "TOKEN=agvt://dev/cloudflare/token",
+            "--",
+            "sh",
+            "-c",
+            "true",
+        ])
+        .output()
+        .unwrap();
+    assert!(run_output.status.success());
+    let after_run = fs::read_to_string(&audit_path).unwrap();
+    assert!(after_run.starts_with(&after_read));
+    assert_eq!(after_run.lines().count(), 3);
+    assert!(after_run.contains("\"op\":\"run\""));
+    assert!(after_run.contains("\"caller\":\"sh\""));
+
+    // run resolving an agvt:// ref already present in the environment
+    let env_run_output = agvt_command(&vault_path)
+        .args(["run", "--", "sh", "-c", "true"])
+        .env("EXTRA_TOKEN", "agvt://dev/cloudflare/token")
+        .output()
+        .unwrap();
+    assert!(env_run_output.status.success());
+    let after_env_run = fs::read_to_string(&audit_path).unwrap();
+    assert!(after_env_run.starts_with(&after_run));
+    assert_eq!(after_env_run.lines().count(), 4);
+
+    // inject
+    fs::write(&template_path, "TOKEN=agvt://dev/cloudflare/token\n").unwrap();
+    let inject_output = agvt_command(&vault_path)
+        .args(["inject", "--redact-output"])
+        .arg(&template_path)
+        .output()
+        .unwrap();
+    assert!(inject_output.status.success());
+    let after_inject = fs::read_to_string(&audit_path).unwrap();
+    assert!(after_inject.starts_with(&after_env_run));
+    assert_eq!(after_inject.lines().count(), 5);
+    assert!(after_inject.contains("\"op\":\"inject\""));
+
+    // delete
+    let delete_output = agvt_command(&vault_path)
+        .args(["delete", "cloudflare"])
+        .output()
+        .unwrap();
+    assert!(delete_output.status.success());
+    let after_delete = fs::read_to_string(&audit_path).unwrap();
+    assert!(after_delete.starts_with(&after_inject));
+    assert_eq!(after_delete.lines().count(), 6);
+    assert!(after_delete.contains("\"op\":\"delete\""));
+
+    // secret values never reach the audit log
+    assert!(!after_delete.contains("cloudflare_dummy_secret"));
+
+    // every line is valid JSON with the expected non-secret fields only
+    for line in after_delete.lines() {
+        let entry: Value = serde_json::from_str(line).unwrap();
+        assert!(entry["ts"].as_u64().unwrap() > 0);
+        assert!(entry["ref"]
+            .as_str()
+            .unwrap()
+            .starts_with("agvt://dev/cloudflare/"));
+        assert!(!entry["op"].as_str().unwrap().is_empty());
+        assert!(!entry["caller"].as_str().unwrap().is_empty());
+        assert_eq!(entry["schemaVersion"], 1);
+    }
+}
+
+#[test]
+fn audit_log_records_import_env_operations() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+    let audit_path = directory.path().join("audit.jsonl");
+    fs::write(
+        directory.path().join(".env.local"),
+        [
+            "CLOUDFLARE_API_TOKEN=cloudflare_dummy_secret",
+            "ADMIN_SECRET=admin_dummy_secret",
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_agvt"))
+        .arg("--vault-path")
+        .arg(&vault_path)
+        .args(["import-env"])
+        .current_dir(directory.path())
+        .env_clear()
+        .env("AGVT_PASSPHRASE", "test-passphrase-with-enough-length")
+        .env("AGVT_AUDIT_PATH", &audit_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let audit_raw = fs::read_to_string(&audit_path).unwrap();
+    assert_eq!(audit_raw.lines().count(), 2);
+    assert!(audit_raw.contains("\"op\":\"import-env\""));
+    assert!(audit_raw.contains("agvt://dev/cloudflare/token"));
+    assert!(audit_raw.contains("agvt://dev/admin-secret/token"));
+    assert!(!audit_raw.contains("cloudflare_dummy_secret"));
+    assert!(!audit_raw.contains("admin_dummy_secret"));
+}
+
+#[test]
+fn audit_ls_lists_entries_without_secret_values() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+
+    let empty_output = agvt_command(&vault_path)
+        .args(["audit", "ls"])
+        .output()
+        .unwrap();
+    assert!(
+        empty_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&empty_output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&empty_output.stdout).contains("No audit entries."));
+
+    let add_output = agvt_command(&vault_path)
+        .args(["add", "github"])
+        .env("GITHUB_TOKEN", "github_dummy_secret")
+        .output()
+        .unwrap();
+    assert!(add_output.status.success());
+
+    let ls_output = agvt_command(&vault_path)
+        .args(["audit", "ls"])
+        .output()
+        .unwrap();
+    assert!(
+        ls_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ls_output.stderr)
+    );
+    let ls_stdout = String::from_utf8_lossy(&ls_output.stdout);
+    assert!(ls_stdout.contains("add\tagvt://dev/github/token\tagvt"));
+    assert!(!ls_stdout.contains("github_dummy_secret"));
+
+    let json_output = agvt_command(&vault_path)
+        .args(["audit", "ls", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        json_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&json_output.stderr)
+    );
+    let json_stdout = String::from_utf8_lossy(&json_output.stdout);
+    assert!(!json_stdout.contains("github_dummy_secret"));
+    let parsed: Value = serde_json::from_slice(&json_output.stdout).unwrap();
+    let entries = parsed["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["op"], "add");
+    assert_eq!(entries[0]["ref"], "agvt://dev/github/token");
+    assert_eq!(entries[0]["caller"], "agvt");
+    assert!(entries[0]["ts"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn audit_write_failure_warns_but_vault_operation_succeeds() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+    let blocker_path = directory.path().join("blocker");
+    fs::write(&blocker_path, "not a directory").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_agvt"))
+        .arg("--vault-path")
+        .arg(&vault_path)
+        .args(["add", "github"])
+        .env("AGVT_PASSPHRASE", "test-passphrase-with-enough-length")
+        .env("GITHUB_TOKEN", "github_dummy_secret")
+        // A file in the parent chain makes the audit write fail.
+        .env("AGVT_AUDIT_PATH", blocker_path.join("audit.jsonl"))
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("saved agvt://dev/github/token"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("audit log write failed"));
+}
+
+#[test]
+fn concurrent_writes_keep_all_items() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+
+    let mut cloudflare_command = agvt_command(&vault_path);
+    cloudflare_command
+        .args(["add", "cloudflare"])
+        .env("CLOUDFLARE_API_TOKEN", "cloudflare_dummy_secret")
+        .env("CLOUDFLARE_ACCOUNT_ID", "cloudflare_account_id")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let cloudflare_child = cloudflare_command.spawn().unwrap();
+
+    let mut github_command = agvt_command(&vault_path);
+    github_command
+        .args(["add", "github"])
+        .env("GITHUB_TOKEN", "github_dummy_secret")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let github_output = github_command.output().unwrap();
+    let cloudflare_output = cloudflare_child.wait_with_output().unwrap();
+
+    assert!(
+        cloudflare_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cloudflare_output.stderr)
+    );
+    assert!(
+        github_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&github_output.stderr)
+    );
+
+    let list_output = agvt_command(&vault_path)
+        .args(["ls", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        list_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&list_output.stderr)
+    );
+    let list_stdout = String::from_utf8_lossy(&list_output.stdout);
+    assert!(list_stdout.contains("\"item\": \"cloudflare\""));
+    assert!(list_stdout.contains("\"item\": \"github\""));
+    assert!(!vault_path.with_file_name("agent-vault.json.lock").exists());
+}
+
+fn charter_command(directory: &Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_agvt"));
+    command
+        // Keep test charter and audit entries out of the real user files.
+        .env("AGVT_CHARTER_PATH", directory.join("charter.json"))
+        .env("AGVT_AUDIT_PATH", directory.join("audit.jsonl"));
+    command
+}
+
+fn dossier_command(directory: &Path) -> Command {
+    let mut command = agvt_command(&directory.join("agent-vault.json"));
+    command.env("AGVT_DOSSIER_PATH", directory.join("dossier.json"));
+    command
+}
+
+#[test]
+fn charter_check_matches_autonomy_ledger_rules_and_records_writes() {
+    let directory = tempfile::tempdir().unwrap();
+
+    // Same three autonomy levels as the per-repository orchestration ledger
+    // (auto / branch-auto / confirm), defined inline as test data.
+    for (scope, autonomy) in [
+        ("repo:autofill-browser", "auto"),
+        ("repo:agent-times", "branch-auto"),
+        ("repo:iam", "confirm"),
+    ] {
+        let add_output = charter_command(directory.path())
+            .args([
+                "charter",
+                "add",
+                "commit",
+                scope,
+                autonomy,
+                "--conditions",
+                "build/test GREEN",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            add_output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&add_output.stderr)
+        );
+    }
+
+    for (scope, autonomy) in [
+        ("repo:autofill-browser", "auto"),
+        ("repo:agent-times", "branch-auto"),
+        ("repo:iam", "confirm"),
+    ] {
+        let check_output = charter_command(directory.path())
+            .args(["charter", "check", "commit", scope])
+            .output()
+            .unwrap();
+        assert!(
+            check_output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&check_output.stderr)
+        );
+        let verdict: Value = serde_json::from_slice(&check_output.stdout).unwrap();
+        assert_eq!(verdict["capability"], "commit");
+        assert_eq!(verdict["scope"], scope);
+        assert_eq!(verdict["autonomy"], autonomy);
+        assert_eq!(verdict["matchedRule"]["scope"], scope);
+        assert_eq!(verdict["matchedRule"]["conditions"], "build/test GREEN");
+    }
+
+    // Every charter write must land in the audit log (self-escalation
+    // detection line, ADR 0013).
+    let audit_raw = fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
+    assert_eq!(audit_raw.lines().count(), 3);
+    assert!(audit_raw.contains("\"op\":\"charter-add\""));
+    assert!(audit_raw.contains("agvt://charter/commit/repo:autofill-browser"));
+    assert!(audit_raw.contains("agvt://charter/commit/repo:iam"));
+
+    // The charter file itself stays plaintext and diffable.
+    let charter_raw = fs::read_to_string(directory.path().join("charter.json")).unwrap();
+    assert!(charter_raw.contains("\"autonomy\": \"branch-auto\""));
+}
+
+#[test]
+fn charter_check_falls_back_to_confirm_for_undefined_capability() {
+    let directory = tempfile::tempdir().unwrap();
+
+    // No charter file at all: still a clean confirm verdict.
+    let check_output = charter_command(directory.path())
+        .args(["charter", "check", "deploy", "repo:autofill-browser"])
+        .output()
+        .unwrap();
+    assert!(
+        check_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&check_output.stderr)
+    );
+    let verdict: Value = serde_json::from_slice(&check_output.stdout).unwrap();
+    assert_eq!(verdict["autonomy"], "confirm");
+    assert!(verdict["matchedRule"].is_null());
+}
+
+#[test]
+fn charter_check_survives_corrupt_charter_file_with_confirm() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(directory.path().join("charter.json"), "{ not json").unwrap();
+
+    let check_output = charter_command(directory.path())
+        .args(["charter", "check", "commit", "repo:autofill-browser"])
+        .output()
+        .unwrap();
+    assert!(
+        check_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&check_output.stderr)
+    );
+    let verdict: Value = serde_json::from_slice(&check_output.stdout).unwrap();
+    assert_eq!(verdict["autonomy"], "confirm");
+    assert!(verdict["matchedRule"].is_null());
+    assert!(String::from_utf8_lossy(&check_output.stderr).contains("charter file is unreadable"));
+
+    // Writes must refuse to clobber the corrupt file.
+    let add_output = charter_command(directory.path())
+        .args(["charter", "add", "commit", "repo:iam", "auto"])
+        .output()
+        .unwrap();
+    assert!(!add_output.status.success());
+    assert!(String::from_utf8_lossy(&add_output.stderr).contains("charter file is unreadable"));
+}
+
+#[test]
+fn charter_add_upserts_and_ls_show_report_rules() {
+    let directory = tempfile::tempdir().unwrap();
+
+    let add_output = charter_command(directory.path())
+        .args(["charter", "add", "commit", "repo:*", "confirm"])
+        .output()
+        .unwrap();
+    assert!(add_output.status.success());
+
+    // Re-adding the same capability/scope replaces the rule instead of
+    // duplicating it.
+    let upsert_output = charter_command(directory.path())
+        .args(["charter", "add", "commit", "repo:*", "branch-auto"])
+        .output()
+        .unwrap();
+    assert!(upsert_output.status.success());
+
+    let ls_output = charter_command(directory.path())
+        .args(["charter", "ls", "--json"])
+        .output()
+        .unwrap();
+    assert!(ls_output.status.success());
+    let listed: Value = serde_json::from_slice(&ls_output.stdout).unwrap();
+    let rules = listed["rules"].as_array().unwrap();
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0]["autonomy"], "branch-auto");
+
+    let show_output = charter_command(directory.path())
+        .args(["charter", "show", "commit"])
+        .output()
+        .unwrap();
+    assert!(show_output.status.success());
+    assert!(String::from_utf8_lossy(&show_output.stdout).contains("repo:*\tbranch-auto"));
+
+    // Wildcard prefix rule applies to unseen repositories.
+    let check_output = charter_command(directory.path())
+        .args(["charter", "check", "commit", "repo:brand-new"])
+        .output()
+        .unwrap();
+    let verdict: Value = serde_json::from_slice(&check_output.stdout).unwrap();
+    assert_eq!(verdict["autonomy"], "branch-auto");
+    assert_eq!(verdict["matchedRule"]["scope"], "repo:*");
+
+    let bad_output = charter_command(directory.path())
+        .args(["charter", "add", "commit", "repo:x", "yolo"])
+        .output()
+        .unwrap();
+    assert!(!bad_output.status.success());
+    assert!(String::from_utf8_lossy(&bad_output.stderr)
+        .contains("autonomy must be auto, branch-auto, confirm, or deny."));
+}
+
+#[test]
+fn dossier_add_search_show_round_trip() {
+    let directory = tempfile::tempdir().unwrap();
+
+    let add_output = dossier_command(directory.path())
+        .args([
+            "dossier",
+            "add",
+            "company-challenges",
+            "--body",
+            "shipping agent-first products",
+            "--tags",
+            "company,strategy",
+            "--tier",
+            "open",
+            "--id",
+            "company-challenges",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        add_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&add_output.stdout)
+        .contains("saved dossier entry company-challenges (tier=open)"));
+
+    let search_output = dossier_command(directory.path())
+        .args(["dossier", "search", "agent-first", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        search_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&search_output.stderr)
+    );
+    let search_stdout = String::from_utf8_lossy(&search_output.stdout);
+    assert!(search_stdout.contains("\"id\": \"company-challenges\""));
+    assert!(search_stdout.contains("\"tier\": \"open\""));
+    // Search output holds metadata only, never bodies.
+    assert!(!search_stdout.contains("shipping agent-first products"));
+
+    let show_output = dossier_command(directory.path())
+        .args(["dossier", "show", "company-challenges"])
+        .output()
+        .unwrap();
+    assert!(
+        show_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&show_output.stderr)
+    );
+    let show_stdout = String::from_utf8_lossy(&show_output.stdout);
+    assert!(show_stdout.contains("shipping agent-first products"));
+    assert!(show_stdout.contains("tier: open"));
+}
+
+#[test]
+fn dossier_locked_entries_stay_encrypted_everywhere_and_are_audited() {
+    let directory = tempfile::tempdir().unwrap();
+    let dossier_path = directory.path().join("dossier.json");
+    let audit_path = directory
+        .path()
+        .join("agent-vault.json")
+        .with_file_name("audit.jsonl");
+    let secret_body = "account-number-9876543210-locked";
+
+    let add_output = dossier_command(directory.path())
+        .args([
+            "dossier",
+            "add",
+            "brokerage account",
+            "--body",
+            secret_body,
+            "--tier",
+            "locked",
+            "--id",
+            "brokerage",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        add_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&add_output.stdout).contains(secret_body));
+
+    // On disk: encrypted only.
+    let raw_dossier = fs::read_to_string(&dossier_path).unwrap();
+    assert!(!raw_dossier.contains(secret_body));
+
+    // show returns the reference, never the raw body.
+    let show_output = dossier_command(directory.path())
+        .args(["dossier", "show", "brokerage", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        show_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&show_output.stderr)
+    );
+    let show_stdout = String::from_utf8_lossy(&show_output.stdout);
+    assert!(show_stdout.contains("\"bodyRef\": \"agvt://dossier/brokerage/body\""));
+    assert!(show_stdout.contains("\"body\": null"));
+    assert!(!show_stdout.contains(secret_body));
+
+    // ls prints metadata only.
+    let ls_output = dossier_command(directory.path())
+        .args(["dossier", "ls"])
+        .output()
+        .unwrap();
+    assert!(ls_output.status.success());
+    assert!(!String::from_utf8_lossy(&ls_output.stdout).contains(secret_body));
+
+    // --tier open filter never returns the locked entry.
+    let filtered_output = dossier_command(directory.path())
+        .args(["dossier", "search", "brokerage", "--tier", "open", "--json"])
+        .output()
+        .unwrap();
+    assert!(filtered_output.status.success());
+    assert!(!String::from_utf8_lossy(&filtered_output.stdout).contains("brokerage"));
+    let filtered_show = dossier_command(directory.path())
+        .args(["dossier", "show", "brokerage", "--tier", "open"])
+        .output()
+        .unwrap();
+    assert!(!filtered_show.status.success());
+    assert!(!String::from_utf8_lossy(&filtered_show.stderr).contains(secret_body));
+
+    // Audit log holds the write and the locked read attempt, never the body.
+    let raw_audit = fs::read_to_string(&audit_path).unwrap();
+    assert!(raw_audit.contains("\"op\":\"dossier-add\""));
+    assert!(raw_audit.contains("\"op\":\"dossier-read-locked\""));
+    assert!(raw_audit.contains("agvt://dossier/brokerage/body"));
+    assert!(!raw_audit.contains(secret_body));
+}
+
+#[test]
 fn global_read_of_bare_added_item_hints_vault_tag_mismatch() {
     let directory = tempfile::tempdir().unwrap();
     let vault_path = directory.path().join("agent-vault.json");
@@ -946,53 +1543,4 @@ fn help_documents_vault_scope_and_file_kind() {
     assert!(ja_stdout.contains("vault scopeは参照で指定する"));
     assert!(ja_stdout.contains("--from-file PATH"));
     assert!(ja_stdout.contains("--decode"));
-}
-
-#[test]
-fn concurrent_writes_keep_all_items() {
-    let directory = tempfile::tempdir().unwrap();
-    let vault_path = directory.path().join("agent-vault.json");
-
-    let mut cloudflare_command = agvt_command(&vault_path);
-    cloudflare_command
-        .args(["add", "cloudflare"])
-        .env("CLOUDFLARE_API_TOKEN", "cloudflare_dummy_secret")
-        .env("CLOUDFLARE_ACCOUNT_ID", "cloudflare_account_id")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let cloudflare_child = cloudflare_command.spawn().unwrap();
-
-    let mut github_command = agvt_command(&vault_path);
-    github_command
-        .args(["add", "github"])
-        .env("GITHUB_TOKEN", "github_dummy_secret")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let github_output = github_command.output().unwrap();
-    let cloudflare_output = cloudflare_child.wait_with_output().unwrap();
-
-    assert!(
-        cloudflare_output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&cloudflare_output.stderr)
-    );
-    assert!(
-        github_output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&github_output.stderr)
-    );
-
-    let list_output = agvt_command(&vault_path)
-        .args(["ls", "--json"])
-        .output()
-        .unwrap();
-    assert!(
-        list_output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&list_output.stderr)
-    );
-    let list_stdout = String::from_utf8_lossy(&list_output.stdout);
-    assert!(list_stdout.contains("\"item\": \"cloudflare\""));
-    assert!(list_stdout.contains("\"item\": \"github\""));
-    assert!(!vault_path.with_file_name("agent-vault.json.lock").exists());
 }

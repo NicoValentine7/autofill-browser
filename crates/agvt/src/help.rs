@@ -84,8 +84,75 @@ Commands:
   agvt keychain set|status|delete
       Manage the macOS Keychain passphrase for this vault path.
 
+  agvt dossier add <topic> (--body TEXT | --body-stdin) [options]
+      Save a context entry (Agent Home Dossier layer).
+      Options: --tags a,b --tier open|standard|locked --id ID.
+      Default tier is standard; pass --tier open to opt in to freely
+      shareable context. locked bodies are encrypted with the vault
+      passphrase mechanism and are never displayed.
+
+  agvt dossier ls [--tier TIER] [--json]
+      List dossier entry metadata only (no bodies).
+
+  agvt dossier show <id> [--tier TIER] [--json]
+      Show one entry. For locked entries the body is replaced by an
+      agvt://dossier/<id>/body reference; the raw body is never printed.
+
+  agvt dossier edit <id> [--topic TEXT] [--body TEXT | --body-stdin] [--tags a,b] [--tier TIER]
+      Update an entry. Moving a locked entry to open/standard requires a
+      new body; locked bodies are never decrypted for display or downgrade.
+
+  agvt dossier rm <id>
+      Delete a dossier entry.
+
+  agvt dossier search <query> [--tier TIER] [--json]
+      Search topics, tags, and open/standard bodies. locked bodies are
+      never searched. All dossier writes and locked reads are audit-logged.
+
+  agvt mcp
+      Start the Agent Home MCP server on stdio (JSON-RPC 2.0, one JSON
+      message per line, EOF stops the server). Tools: dossier_search,
+      dossier_read, charter_check, vault_ls, secret_handoff.
+      Raw secret values and locked dossier bodies never appear in MCP
+      responses: locked material and secret_handoff answers carry an
+      agvt:// reference plus `agvt run` consumption instructions instead.
+      Every tool call is audit-logged with caller "mcp".
+
   agvt ls [--json]
       List non-secret metadata only.
+
+  agvt audit ls [--json]
+      Show vault operation history from the append-only audit log.
+      Entries hold op, agvt:// ref, UTC epoch time, and caller command name.
+      Secret values are never recorded.
+
+  agvt charter add <capability> <scope> <autonomy> [--conditions TEXT] [--notes TEXT]
+      Save an autonomy rule. autonomy: auto|branch-auto|confirm|deny.
+      Scope matching is exact first, then trailing-wildcard prefix (repo:*),
+      then the capability default *. Every write is audit-logged.
+
+  agvt charter ls [--json]
+      List all charter rules. The charter file is plaintext by design.
+
+  agvt charter show <capability> [--json]
+      Show the rules of one capability.
+
+  agvt charter check <capability> <scope>
+      Print a machine-readable JSON verdict {capability, scope, autonomy,
+      matchedRule}. Undefined capabilities, unmatched scopes, and a missing
+      or unreadable charter file always resolve to "confirm".
+
+  agvt wire [--target DIR] [--print]
+      Generate environment bootstrap material (Agent Home wiring).
+      --target DIR merges an "agvt" entry into DIR/.mcp.json without touching
+      other servers, and writes DIR/.agent-home.md containing the open-tier
+      dossier summary, MCP connection notes, and the charter digest, with
+      guidance for including it from CLAUDE.md / AGENTS.md.
+      --print writes the same fragment to stdout for copy-paste into cloud
+      environments. wire output never contains secret values or
+      standard/locked dossier content.
+      Note: `agvt inject` is a separate command that resolves secret refs
+      into values; wire only generates configuration and includes no values.
 
   agvt delete <item-or-ref>
       Delete an item. Use a full reference such as agvt://global/<item>/token
@@ -104,6 +171,9 @@ Environment:
   AGVT_PASSPHRASE      Vault passphrase. Keychain is used if absent on macOS.
   AGVT_PATH            Repo-local vault path. Default: .local/agent-vault.json
   AGVT_GLOBAL_PATH     Global vault path. Default: ~/.local/share/agvt/agent-vault.json
+  AGVT_AUDIT_PATH      Audit log path. Default: ~/.local/share/agvt/audit.jsonl
+  AGVT_CHARTER_PATH    Charter path. Default: ~/.local/share/agvt/charter.json
+  AGVT_DOSSIER_PATH    Dossier path. Default: ~/.local/share/agvt/dossier.json
   AGVT_KEYCHAIN=0      Disable Keychain lookup.
   AGVT_LANG=ja|en      Choose help language.
 
@@ -194,8 +264,73 @@ const HELP_JA: &str = r#"agvt - Agent Vault CLI
   agvt keychain set|status|delete
       このvault path用のmacOS Keychain passphraseを管理する
 
+  agvt dossier add <topic> (--body TEXT | --body-stdin) [options]
+      contextエントリを保存する（Agent HomeのDossier層）
+      option: --tags a,b --tier open|standard|locked --id ID
+      tierのdefaultはstandard。自由に共有してよいcontextだけ
+      --tier open で明示的にopt-inする。lockedのbodyはvaultと同じ
+      passphrase機構で暗号化され、決して表示されない
+
+  agvt dossier ls [--tier TIER] [--json]
+      dossierエントリのmetadataだけ一覧する（bodyは出さない）
+
+  agvt dossier show <id> [--tier TIER] [--json]
+      エントリを1件表示する。lockedはbodyの代わりに
+      agvt://dossier/<id>/body 参照を返し、生のbodyは決して出力しない
+
+  agvt dossier edit <id> [--topic TEXT] [--body TEXT | --body-stdin] [--tags a,b] [--tier TIER]
+      エントリを更新する。lockedをopen/standardへ変更するには新しい
+      bodyが必要（lockedのbodyは表示・降格のために復号されない）
+
+  agvt dossier rm <id>
+      dossierエントリを削除する
+
+  agvt dossier search <query> [--tier TIER] [--json]
+      topic・tags・open/standardのbodyを検索する。lockedのbodyは
+      検索されない。dossierの全writeとlocked readはauditに記録される
+
+  agvt mcp
+      Agent HomeのMCP serverをstdioで起動する（JSON-RPC 2.0、1行1メッセージ、
+      EOFで終了）。tool: dossier_search, dossier_read, charter_check,
+      vault_ls, secret_handoff
+      secret値とlocked dossier bodyはMCP responseに決して含めない。
+      locked本文とsecret_handoffは agvt:// 参照と `agvt run` での消費手順
+      だけを返す。全tool callはcaller "mcp" でaudit logに記録される
+
   agvt ls [--json]
       secret値を出さずにmetadataだけ一覧する
+
+  agvt audit ls [--json]
+      append-onlyのaudit logからvault操作履歴を見る
+      記録は操作名・agvt://参照・UTC epoch時刻・呼び出しコマンド名のみ
+      secret値は決して記録されない
+
+  agvt charter add <capability> <scope> <autonomy> [--conditions TEXT] [--notes TEXT]
+      autonomy ruleを保存する。autonomy: auto|branch-auto|confirm|deny
+      scopeは完全一致 → 末尾wildcard前方一致（repo:*）→ capability既定の *
+      の順で照合する。書き込みは必ずaudit logに記録される
+
+  agvt charter ls [--json]
+      charter ruleを一覧する。charter fileは意図的に平文で保存される
+
+  agvt charter show <capability> [--json]
+      1つのcapabilityのruleを見る
+
+  agvt charter check <capability> <scope>
+      機械可読なJSON判定 {capability, scope, autonomy, matchedRule} を出力する
+      未定義capability・未一致scope・charter file欠損/読取不能は常に
+      "confirm" になる
+
+  agvt wire [--target DIR] [--print]
+      agent環境への配線material（Agent Home wiring）を生成する
+      --target DIR は DIR/.mcp.json に "agvt" エントリだけをマージし
+      （他のserver設定は壊さない）、open tierのdossier要約・MCP接続の
+      説明・charter要旨を含む DIR/.agent-home.md を書き出して、
+      CLAUDE.md / AGENTS.md への取り込み方法を案内する
+      --print は同じ断片をstdoutへ出す（cloud環境へのコピペ用）
+      wireの出力にsecret値やstandard/lockedのdossier内容は決して含まれない
+      注意: `agvt inject` はsecret参照を値に解決して出力する別コマンド。
+      wireは設定の生成のみで、値を一切含まない
 
   agvt delete <item-or-ref>
       itemを削除する。default以外のvault tagは agvt://global/<item>/token の
@@ -214,6 +349,9 @@ secret reference:
   AGVT_PASSPHRASE      Vault passphrase。macOSでは未指定時にKeychainを見る
   AGVT_PATH            repo-local Vault path。default: .local/agent-vault.json
   AGVT_GLOBAL_PATH     global Vault path。default: ~/.local/share/agvt/agent-vault.json
+  AGVT_AUDIT_PATH      audit log path。default: ~/.local/share/agvt/audit.jsonl
+  AGVT_CHARTER_PATH    charter path。default: ~/.local/share/agvt/charter.json
+  AGVT_DOSSIER_PATH    dossier path。default: ~/.local/share/agvt/dossier.json
   AGVT_KEYCHAIN=0      Keychain lookupを無効化
   AGVT_LANG=ja|en      help languageを選ぶ
 
