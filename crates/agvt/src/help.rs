@@ -145,6 +145,27 @@ Commands:
       matchedRule}. Undefined capabilities, unmatched scopes, and a missing
       or unreadable charter file always resolve to "confirm".
 
+  agvt sync init
+      Initialize zero-knowledge sync. Generates the snapshot encryption key
+      (Vault Key) and a high-entropy Recovery Phrase, prints the phrase
+      exactly once (write it down — it is never shown, stored, or sent
+      anywhere), and saves the sync state including the Vault Recovery
+      Package (the Vault Key wrapped with the phrase, PBKDF2-SHA256 600k +
+      AES-GCM).
+
+  agvt sync push
+      Encrypt the global vault, dossier, and charter files into one snapshot
+      and upload it with the recovery package. The server only ever sees
+      ciphertext and metadata; it cannot decrypt anything (zero-knowledge).
+
+  agvt sync pull [--recovery-phrase-stdin]
+      Download and restore the snapshot. Safety: existing files are backed
+      up as *.bak, content is decrypted and verified in temp files, then
+      atomically renamed into place — a failure leaves existing files
+      untouched. schemaVersion mismatches are explicit errors.
+      On a new machine, pipe the Recovery Phrase on stdin:
+      `printf %s "<phrase>" | agvt sync pull --recovery-phrase-stdin`.
+
   agvt wire [--target DIR] [--print]
       Generate environment bootstrap material (Agent Home wiring).
       --target DIR merges an "agvt" entry into DIR/.mcp.json without touching
@@ -177,6 +198,12 @@ Environment:
   AGVT_AUDIT_PATH      Audit log path. Default: ~/.local/share/agvt/audit.jsonl
   AGVT_CHARTER_PATH    Charter path. Default: ~/.local/share/agvt/charter.json
   AGVT_DOSSIER_PATH    Dossier path. Default: ~/.local/share/agvt/dossier.json
+  AGVT_SYNC_URL        Sync worker endpoint. Required for sync push/pull;
+                       there is no default (no hardcoded production URL).
+  AGVT_SYNC_PATH       Sync state path. Default: ~/.local/share/agvt/sync.json
+  AGVT_SYNC_TOKEN      Sync bearer token value (cold-start pulls). Otherwise
+                       the token is resolved from AGVT_SYNC_TOKEN_REF
+                       (default agvt://global/cloudflare/token).
   AGVT_KEYCHAIN=0      Disable Keychain lookup.
   AGVT_LANG=ja|en      Choose help language.
 
@@ -327,6 +354,25 @@ const HELP_JA: &str = r#"agvt - Agent Vault CLI
       未定義capability・未一致scope・charter file欠損/読取不能は常に
       "confirm" になる
 
+  agvt sync init
+      zero-knowledge syncを初期化する。snapshot暗号鍵（Vault Key）と
+      高エントロピーのRecovery Phraseを生成し、phraseを一度だけ表示する
+      （必ず書き留める — 以後表示・保存・送信は一切されない）。Vault Keyを
+      phraseでラップしたVault Recovery Package（PBKDF2-SHA256 600k +
+      AES-GCM）を含むsync stateを保存する
+
+  agvt sync push
+      global vault・dossier・charterの3ファイルを1つの暗号化snapshotに
+      まとめてrecovery packageと一緒にuploadする。serverには暗号文と
+      metadataしか渡らず、serverは何も復号できない（zero-knowledge）
+
+  agvt sync pull [--recovery-phrase-stdin]
+      snapshotをdownloadして復元する。安全設計: 既存ファイルを *.bak に
+      backup → 一時ファイルへ復号・検証 → atomic rename の3段。途中で
+      失敗しても既存ファイルは無傷。schemaVersion不一致は明示エラー
+      新しいmachineではRecovery Phraseをstdinで渡す:
+      `printf %s "<phrase>" | agvt sync pull --recovery-phrase-stdin`
+
   agvt wire [--target DIR] [--print]
       agent環境への配線material（Agent Home wiring）を生成する
       --target DIR は DIR/.mcp.json に "agvt" エントリだけをマージし
@@ -358,6 +404,12 @@ secret reference:
   AGVT_AUDIT_PATH      audit log path。default: ~/.local/share/agvt/audit.jsonl
   AGVT_CHARTER_PATH    charter path。default: ~/.local/share/agvt/charter.json
   AGVT_DOSSIER_PATH    dossier path。default: ~/.local/share/agvt/dossier.json
+  AGVT_SYNC_URL        sync worker endpoint。sync push/pullに必須。
+                       defaultなし（本番URLはhardcodeしない）
+  AGVT_SYNC_PATH       sync state path。default: ~/.local/share/agvt/sync.json
+  AGVT_SYNC_TOKEN      sync用bearer tokenの値（cold-start pull用）。未指定なら
+                       AGVT_SYNC_TOKEN_REF（default agvt://global/cloudflare/token）
+                       のvault参照から解決する
   AGVT_KEYCHAIN=0      Keychain lookupを無効化
   AGVT_LANG=ja|en      help languageを選ぶ
 

@@ -1,0 +1,24 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "autofill-browser-sync-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-20",
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      // database_id はプレースホルダ。本番デプロイ（ユーザー確認ゲート）の際に
+      // `npx wrangler d1 create autofill-browser-sync` で作成した ID に差し替える。
+      // ローカル開発は `npx wrangler dev` + `pnpm migrate:local` で完結する。
+      "database_name": "autofill-browser-sync",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ]
+  // SYNC_AUTH_TOKEN は secret として設定する:
+  //   ローカル: apps/sync-worker/.dev.vars（gitignore 済み）に SYNC_AUTH_TOKEN=...
+  //   本番:     npx wrangler secret put SYNC_AUTH_TOKEN（ユーザー確認ゲート後）
+}

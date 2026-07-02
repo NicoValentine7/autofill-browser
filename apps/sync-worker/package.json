@@ -1,0 +1,16 @@
+{
+  "name": "sync-worker",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "npx wrangler dev",
+    "deploy": "npx wrangler deploy",
+    "test": "vitest run",
+    "migrate:local": "npx wrangler d1 migrations apply autofill-browser-sync --local",
+    "migrate:remote": "npx wrangler d1 migrations apply autofill-browser-sync --remote"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.2"
+  }
+}
