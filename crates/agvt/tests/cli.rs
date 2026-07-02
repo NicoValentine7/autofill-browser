@@ -722,6 +722,233 @@ fn inject_replaces_secret_refs() {
 }
 
 #[test]
+fn global_read_of_bare_added_item_hints_vault_tag_mismatch() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+
+    let add_output = agvt_command(&vault_path)
+        .args(["add", "github"])
+        .env("GITHUB_TOKEN", "github_dummy_secret")
+        .output()
+        .unwrap();
+    assert!(
+        add_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let read_output = agvt_command(&vault_path)
+        .args(["read", "agvt://global/github/token"])
+        .output()
+        .unwrap();
+    assert!(!read_output.status.success());
+    let stderr = String::from_utf8_lossy(&read_output.stderr);
+    assert!(stderr.contains("Vault item not found: global:github"));
+    assert!(stderr.contains("agvt://dev/github/token"));
+    assert!(stderr.contains("full reference"));
+    assert!(!stderr.contains("github_dummy_secret"));
+}
+
+#[test]
+fn delete_with_wrong_vault_tag_fails_with_hint() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+
+    let add_output = agvt_command(&vault_path)
+        .args(["add", "github"])
+        .env("GITHUB_TOKEN", "github_dummy_secret")
+        .output()
+        .unwrap();
+    assert!(
+        add_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let delete_output = agvt_command(&vault_path)
+        .args(["delete", "agvt://global/github/token"])
+        .output()
+        .unwrap();
+    assert!(!delete_output.status.success());
+    let stderr = String::from_utf8_lossy(&delete_output.stderr);
+    assert!(stderr.contains("Vault item not found: global:github"));
+    assert!(stderr.contains("agvt://dev/github/token"));
+
+    let list_output = agvt_command(&vault_path)
+        .args(["ls", "--json"])
+        .output()
+        .unwrap();
+    assert!(list_output.status.success());
+    assert!(String::from_utf8_lossy(&list_output.stdout).contains("\"item\": \"github\""));
+}
+
+#[test]
+fn file_kind_round_trip_stores_base64_and_decodes_raw_bytes() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+    let key_path = directory.path().join("AuthKey_TEST.p12");
+    let key_bytes: Vec<u8> = (0..=255u8).cycle().take(600).collect();
+    fs::write(&key_path, &key_bytes).unwrap();
+
+    let add_output = agvt_command(&vault_path)
+        .args(["add", "apple-signing-key", "--from-file"])
+        .arg(&key_path)
+        .output()
+        .unwrap();
+    assert!(
+        add_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&add_output.stdout)
+        .contains("saved agvt://dev/apple-signing-key/content"));
+
+    let list_output = agvt_command(&vault_path)
+        .args(["ls", "--json"])
+        .output()
+        .unwrap();
+    assert!(list_output.status.success());
+    assert!(String::from_utf8_lossy(&list_output.stdout).contains("\"kind\": \"file\""));
+
+    let filename_output = agvt_command(&vault_path)
+        .args(["read", "agvt://dev/apple-signing-key/filename"])
+        .output()
+        .unwrap();
+    assert!(
+        filename_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&filename_output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&filename_output.stdout).trim(),
+        "AuthKey_TEST.p12"
+    );
+
+    let decode_output = agvt_command(&vault_path)
+        .args(["read", "agvt://dev/apple-signing-key/content", "--decode"])
+        .output()
+        .unwrap();
+    assert!(
+        decode_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&decode_output.stderr)
+    );
+    assert_eq!(decode_output.stdout, key_bytes);
+}
+
+#[test]
+fn read_decode_rejects_non_base64_fields() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+
+    let add_output = agvt_command(&vault_path)
+        .args(["add", "github"])
+        .env("GITHUB_TOKEN", "not+base64!!token")
+        .output()
+        .unwrap();
+    assert!(
+        add_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let decode_output = agvt_command(&vault_path)
+        .args(["read", "agvt://dev/github/token", "--decode"])
+        .output()
+        .unwrap();
+    assert!(!decode_output.status.success());
+    assert!(String::from_utf8_lossy(&decode_output.stderr)
+        .contains("--decode requires a base64-encoded field value"));
+}
+
+#[test]
+fn read_decode_of_missing_field_fails_instead_of_writing_empty_output() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+    let key_path = directory.path().join("key.p8");
+    fs::write(&key_path, b"dummy-key-bytes").unwrap();
+
+    let add_output = agvt_command(&vault_path)
+        .args(["add", "apple-key", "--from-file"])
+        .arg(&key_path)
+        .output()
+        .unwrap();
+    assert!(
+        add_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let decode_output = agvt_command(&vault_path)
+        .args(["read", "agvt://dev/apple-key/notes", "--decode"])
+        .output()
+        .unwrap();
+    assert!(!decode_output.status.success());
+    assert!(decode_output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&decode_output.stderr)
+        .contains("field `notes` is empty or missing"));
+}
+
+#[test]
+fn from_file_rejects_files_over_the_raw_size_limit() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+    let key_path = directory.path().join("too-large.p12");
+    fs::write(&key_path, vec![0_u8; 97 * 1024]).unwrap();
+
+    let add_output = agvt_command(&vault_path)
+        .args(["add", "too-large-key", "--from-file"])
+        .arg(&key_path)
+        .output()
+        .unwrap();
+    assert!(!add_output.status.success());
+    assert!(String::from_utf8_lossy(&add_output.stderr).contains("file is too large"));
+}
+
+#[test]
+fn from_file_requires_file_kind() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+    let key_path = directory.path().join("key.pem");
+    fs::write(&key_path, b"dummy").unwrap();
+
+    let add_output = agvt_command(&vault_path)
+        .args(["add", "some-key", "--kind", "ssh-key", "--from-file"])
+        .arg(&key_path)
+        .output()
+        .unwrap();
+    assert!(!add_output.status.success());
+    assert!(String::from_utf8_lossy(&add_output.stderr)
+        .contains("--from-file is only supported with --kind file."));
+}
+
+#[test]
+fn help_documents_vault_scope_and_file_kind() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+
+    let en_output = agvt_command(&vault_path)
+        .args(["help", "en"])
+        .output()
+        .unwrap();
+    assert!(en_output.status.success());
+    let en_stdout = String::from_utf8_lossy(&en_output.stdout);
+    assert!(en_stdout.contains("Vault scope comes from the reference"));
+    assert!(en_stdout.contains("--from-file PATH"));
+    assert!(en_stdout.contains("--decode"));
+
+    let ja_output = agvt_command(&vault_path)
+        .args(["help", "ja"])
+        .output()
+        .unwrap();
+    assert!(ja_output.status.success());
+    let ja_stdout = String::from_utf8_lossy(&ja_output.stdout);
+    assert!(ja_stdout.contains("vault scopeは参照で指定する"));
+    assert!(ja_stdout.contains("--from-file PATH"));
+    assert!(ja_stdout.contains("--decode"));
+}
+
+#[test]
 fn concurrent_writes_keep_all_items() {
     let directory = tempfile::tempdir().unwrap();
     let vault_path = directory.path().join("agent-vault.json");
