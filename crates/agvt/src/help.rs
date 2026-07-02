@@ -40,13 +40,16 @@ Commands:
       Other kinds: --kind totp|ssh-key|login|file|custom with --field NAME=VALUE,
       --field-env NAME=ENV, or --field-stdin NAME.
       Key files (.p8/.p12 etc): --from-file PATH stores the file base64-encoded
-      in the `content` field (kind file is implied) and records `filename`.
-      Read it back with `agvt read <ref-to-content> --decode`.
+      in the `content` field (kind file is implied) and records `filename`,
+      `size`, and `sha256` metadata, visible via `agvt ls --json`.
+      Read it back with `agvt read <ref-to-content> --decode --out FILE`.
 
-  agvt read <item-or-ref> [field] [--decode]
+  agvt read <item-or-ref> [field] [--decode] [--out FILE] [--force]
       Read a field. Examples: cloudflare token, agvt://global/github/token,
       agvt://repo/github-ssh/private-key.
       --decode base64-decodes the value and writes raw bytes, for file items.
+      --out FILE writes the value to FILE (mode 0600) instead of stdout and
+      refuses to overwrite an existing file unless --force is given.
 
   agvt run [preset] [--env ENV=ref] [safety options] -- <command> [args...]
       Inject selected secrets into a child process.
@@ -220,13 +223,16 @@ const HELP_JA: &str = r#"agvt - Agent Vault CLI
       他のkind: --kind totp|ssh-key|login|file|custom と
       --field NAME=VALUE、--field-env NAME=ENV、--field-stdin NAME
       鍵ファイル（.p8/.p12等）: --from-file PATH でbase64化して `content`
-      fieldに保存する（kind fileが自動で選ばれ、`filename` も記録する）
-      読み出しは `agvt read <contentへのref> --decode`
+      fieldに保存する（kind fileが自動で選ばれ、`filename`・`size`・`sha256`
+      もメタデータとして記録する。`agvt ls --json` で確認できる）
+      読み出しは `agvt read <contentへのref> --decode --out FILE`
 
-  agvt read <item-or-ref> [field] [--decode]
+  agvt read <item-or-ref> [field] [--decode] [--out FILE] [--force]
       fieldを読む。例: cloudflare token、agvt://global/github/token、
       agvt://repo/github-ssh/private-key
       --decode はbase64をdecodeして生bytesを出力する（file item用）
+      --out FILE はstdoutの代わりにFILEへ直接書き出す（権限0600）。
+      既存ファイルは --force を付けない限り上書きしない
 
   agvt run [preset] [--env ENV=ref] [safety options] -- <command> [args...]
       選んだsecretだけを子プロセスへ渡す
