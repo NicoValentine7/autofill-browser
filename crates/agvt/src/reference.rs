@@ -71,7 +71,7 @@ pub fn validate_field_name(value: &str) -> Result<String> {
         | "accountId" | "account-id" | "tokenId" | "token-id" | "expiresOn" | "expires-on"
         | "notes" | "secret" | "totp-secret" | "password" | "username" | "url" | "issuer"
         | "privateKey" | "private-key" | "publicKey" | "public-key" | "passphrase" | "period"
-        | "digits" => Ok(value.to_owned()),
+        | "digits" | "content" | "filename" => Ok(value.to_owned()),
         _ => Err(AgvtError::new(
             "field must be a supported Agent Vault field.",
         )),

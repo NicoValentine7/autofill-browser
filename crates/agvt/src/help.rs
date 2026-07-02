@@ -30,16 +30,23 @@ Common flows:
       Print one field from one item.
 
 Commands:
-  agvt add <item> [options]
+  agvt add <item-or-ref> [options]
       Save a secret. Default kind is api-token.
+      Vault scope comes from the reference: `agvt add agvt://global/<item>/token`
+      saves under the global vault tag. A bare item name saves under the
+      default vault tag (dev) and is read back as agvt://dev/<item>/<field>.
       Token input: --from-env ENV, --from-stdin, or a preset env var.
       Metadata: --label TEXT --service-url URL --account TEXT --account-id ID --notes TEXT.
-      Other kinds: --kind totp|ssh-key|login|custom with --field NAME=VALUE,
+      Other kinds: --kind totp|ssh-key|login|file|custom with --field NAME=VALUE,
       --field-env NAME=ENV, or --field-stdin NAME.
+      Key files (.p8/.p12 etc): --from-file PATH stores the file base64-encoded
+      in the `content` field (kind file is implied) and records `filename`.
+      Read it back with `agvt read <ref-to-content> --decode`.
 
-  agvt read <item-or-ref> [field]
+  agvt read <item-or-ref> [field] [--decode]
       Read a field. Examples: cloudflare token, agvt://global/github/token,
       agvt://repo/github-ssh/private-key.
+      --decode base64-decodes the value and writes raw bytes, for file items.
 
   agvt run [preset] [--env ENV=ref] [safety options] -- <command> [args...]
       Inject selected secrets into a child process.
@@ -148,7 +155,8 @@ Commands:
       into values; wire only generates configuration and includes no values.
 
   agvt delete <item-or-ref>
-      Delete an item.
+      Delete an item. Use a full reference such as agvt://global/<item>/token
+      to target a non-default vault tag; a bare name targets the dev tag.
 
   agvt presets [--json]
       Show built-in presets and injected fields.
@@ -202,16 +210,23 @@ const HELP_JA: &str = r#"agvt - Agent Vault CLI
       1つのitemから1つのfieldだけ読む
 
 コマンド一覧:
-  agvt add <item> [options]
+  agvt add <item-or-ref> [options]
       secretを保存する。何も指定しない場合は api-token
+      vault scopeは参照で指定する: `agvt add agvt://global/<item>/token` は
+      global vault tagに保存する。item名だけならdefault vault tag（dev）に
+      保存され、agvt://dev/<item>/<field> で読む
       token入力: --from-env ENV、--from-stdin、またはpresetの環境変数
       metadata: --label TEXT --service-url URL --account TEXT --account-id ID --notes TEXT
-      他のkind: --kind totp|ssh-key|login|custom と
+      他のkind: --kind totp|ssh-key|login|file|custom と
       --field NAME=VALUE、--field-env NAME=ENV、--field-stdin NAME
+      鍵ファイル（.p8/.p12等）: --from-file PATH でbase64化して `content`
+      fieldに保存する（kind fileが自動で選ばれ、`filename` も記録する）
+      読み出しは `agvt read <contentへのref> --decode`
 
-  agvt read <item-or-ref> [field]
+  agvt read <item-or-ref> [field] [--decode]
       fieldを読む。例: cloudflare token、agvt://global/github/token、
       agvt://repo/github-ssh/private-key
+      --decode はbase64をdecodeして生bytesを出力する（file item用）
 
   agvt run [preset] [--env ENV=ref] [safety options] -- <command> [args...]
       選んだsecretだけを子プロセスへ渡す
@@ -318,7 +333,8 @@ const HELP_JA: &str = r#"agvt - Agent Vault CLI
       wireは設定の生成のみで、値を一切含まない
 
   agvt delete <item-or-ref>
-      itemを削除する
+      itemを削除する。default以外のvault tagは agvt://global/<item>/token の
+      ようなフル参照で指定する。item名だけならdev tagを対象にする
 
   agvt presets [--json]
       built-in presetと注入されるfieldを見る

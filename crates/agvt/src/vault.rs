@@ -17,7 +17,7 @@ use serde_json::{Map, Value};
 
 use crate::error::{AgvtError, Result};
 use crate::keychain;
-use crate::reference::SecretRef;
+use crate::reference::{SecretRef, DEFAULT_VAULT_NAME};
 
 pub const DEFAULT_AGENT_VAULT_PATH: &str = ".local/agent-vault.json";
 pub const AGVT_PASSPHRASE_ENV: &str = "AGVT_PASSPHRASE";
@@ -33,7 +33,7 @@ const MAX_KDF_ITERATIONS: u32 = 5_000_000;
 const KEY_CHECK_VALUE: &str = "agent-vault-key-check:v1";
 const ALGORITHM: &str = "PBKDF2-SHA256/AES-GCM";
 pub(crate) const KDF_NAME: &str = "PBKDF2-SHA256";
-const MAX_SECRET_BYTES: usize = 128 * 1024;
+pub(crate) const MAX_SECRET_BYTES: usize = 128 * 1024;
 const LOCK_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 const LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
 
@@ -155,9 +155,9 @@ fn json_string(value: &str) -> String {
 pub fn validate_item_kind(value: &str) -> Result<String> {
     let normalized = value.trim().to_ascii_lowercase();
     match normalized.as_str() {
-        "api-token" | "login" | "totp" | "ssh-key" | "custom" | "secret" => Ok(normalized),
+        "api-token" | "login" | "totp" | "ssh-key" | "file" | "custom" | "secret" => Ok(normalized),
         _ => Err(AgvtError::new(
-            "kind must be one of api-token, login, totp, ssh-key, custom, or secret.",
+            "kind must be one of api-token, login, totp, ssh-key, file, custom, or secret.",
         )),
     }
 }
@@ -175,7 +175,9 @@ pub fn canonical_payload_field(value: &str) -> Result<String> {
         "totp-secret" => "secret".to_owned(),
         "token" | "serviceUrl" | "accountName" | "accountId" | "tokenId" | "expiresOn"
         | "notes" | "secret" | "password" | "username" | "url" | "issuer" | "privateKey"
-        | "publicKey" | "passphrase" | "period" | "digits" => trimmed.to_owned(),
+        | "publicKey" | "passphrase" | "period" | "digits" | "content" | "filename" => {
+            trimmed.to_owned()
+        }
         _ => {
             return Err(AgvtError::new(
                 "field must be a supported Agent Vault field name.",
@@ -616,6 +618,7 @@ pub fn upsert_secret(path: &Path, passphrase: &str, input: UpsertSecretInput) ->
         "login" => "password",
         "totp" => "secret",
         "ssh-key" => "privateKey",
+        "file" => "content",
         "custom" | "secret" => "secret",
         _ => "secret",
     };
@@ -661,7 +664,7 @@ pub fn read_secret_payload(
     let item = vault
         .items
         .get(&storage_name)
-        .ok_or_else(|| AgvtError::new(format!("Vault item not found: {storage_name}")))?;
+        .ok_or_else(|| item_not_found_error(&vault, secret_ref))?;
     let plaintext = decrypt_text(
         &item.encrypted_value,
         &key,
@@ -681,9 +684,37 @@ pub fn delete_item(path: &Path, passphrase: &str, secret_ref: &SecretRef) -> Res
     let mut vault =
         load_vault(path)?.ok_or_else(|| AgvtError::new("Agent Vault file does not exist."))?;
     unlock_vault(&vault, passphrase)?;
-    vault.items.remove(&secret_ref.storage_name());
+    if vault.items.remove(&secret_ref.storage_name()).is_none() {
+        return Err(item_not_found_error(&vault, secret_ref));
+    }
     vault.updated_at = now_stamp();
     save_vault(path, &vault)
+}
+
+fn item_not_found_error(vault: &VaultFile, secret_ref: &SecretRef) -> AgvtError {
+    let storage_name = secret_ref.storage_name();
+    let other_vault_refs: Vec<String> = vault
+        .items
+        .keys()
+        .filter_map(|name| {
+            let (vault_name, item_name) = name
+                .split_once(':')
+                .unwrap_or((DEFAULT_VAULT_NAME, name.as_str()));
+            (item_name == secret_ref.item && name.as_str() != storage_name)
+                .then(|| format!("agvt://{vault_name}/{item_name}/{}", secret_ref.field))
+        })
+        .collect();
+    if other_vault_refs.is_empty() {
+        return AgvtError::new(format!("Vault item not found: {storage_name}"));
+    }
+    AgvtError::new(format!(
+        "Vault item not found: {storage_name}. The item exists under a different vault tag: {}. \
+         Items added by bare name are tagged with the default vault ({DEFAULT_VAULT_NAME}); \
+         pass a full reference such as `agvt add agvt://{}/{}/token` to choose the vault scope.",
+        other_vault_refs.join(", "),
+        secret_ref.vault,
+        secret_ref.item
+    ))
 }
 
 pub fn list_items(path: &Path) -> Result<Vec<ListedItem>> {
@@ -697,7 +728,7 @@ pub fn list_items(path: &Path) -> Result<Vec<ListedItem>> {
             let (vault_name, item_name) = storage_name
                 .split_once(':')
                 .map(|(vault_name, item_name)| (vault_name.to_owned(), item_name.to_owned()))
-                .unwrap_or_else(|| ("dev".to_owned(), storage_name.clone()));
+                .unwrap_or_else(|| (DEFAULT_VAULT_NAME.to_owned(), storage_name.clone()));
             ListedItem {
                 vault: vault_name,
                 item: item_name,

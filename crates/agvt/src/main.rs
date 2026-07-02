@@ -16,10 +16,12 @@ mod wire;
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
-use std::io::{self, IsTerminal, Read};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use cloudflare::{create_user_token, load_policy_file, CreateTokenInput};
 use error::{AgvtError, Result};
 use prepare::handle_prepare;
@@ -32,8 +34,12 @@ use vault::{
     canonical_payload_field, default_global_vault_path, default_vault_path, delete_item,
     list_items, read_secret_field, require_passphrase_for_path, upsert_api_token, upsert_secret,
     validate_item_kind, validate_passphrase_value, UpsertSecretInput, UpsertTokenInput,
-    AGVT_PASSPHRASE_ENV, LEGACY_PASSPHRASE_ENV,
+    AGVT_PASSPHRASE_ENV, LEGACY_PASSPHRASE_ENV, MAX_SECRET_BYTES,
 };
+
+// Base64 expands content by 4/3, so raw file input must stay under this to fit
+// the encrypted-field size limit.
+const MAX_RAW_FILE_BYTES: usize = MAX_SECRET_BYTES / 4 * 3;
 
 #[derive(Debug)]
 pub(crate) struct GlobalOptions {
@@ -49,6 +55,7 @@ pub(crate) struct GlobalOptions {
 struct AddOptions {
     from_stdin: bool,
     from_env: Option<String>,
+    from_file: Option<String>,
     kind: Option<String>,
     label: Option<String>,
     service_url: Option<String>,
@@ -174,7 +181,9 @@ pub(crate) fn take_value(args: &[String], index: usize, option: &str) -> Result<
 fn handle_add(options: &GlobalOptions) -> Result<()> {
     let Some(target) = options.args.first() else {
         return Err(AgvtError::new(
-            "add requires an item name or secret reference.",
+            "add requires an item name or secret reference. \
+             Use agvt://<vault>/<item>/<field> to choose the vault scope; \
+             a bare item name saves under the default vault tag.",
         ));
     };
     let add_options = parse_add_options(&options.args[1..])?;
@@ -184,12 +193,16 @@ fn handle_add(options: &GlobalOptions) -> Result<()> {
         .unwrap_or(&options.default_vault);
     let secret_ref = item_target_to_ref(target, default_vault, "token")?;
     let preset = find_preset(&secret_ref.item);
-    let kind = add_options
-        .kind
-        .as_deref()
-        .map(validate_item_kind)
-        .transpose()?
-        .unwrap_or_else(|| "api-token".to_owned());
+    let kind = match add_options.kind.as_deref() {
+        Some(kind) => validate_item_kind(kind)?,
+        None if add_options.from_file.is_some() => "file".to_owned(),
+        None => "api-token".to_owned(),
+    };
+    if add_options.from_file.is_some() && kind != "file" {
+        return Err(AgvtError::new(
+            "--from-file is only supported with --kind file.",
+        ));
+    }
     let vault_path = path_for_secret_ref(options, &secret_ref);
     let passphrase = require_passphrase_for_path(vault_path)?;
 
@@ -273,6 +286,10 @@ fn parse_add_options(args: &[String]) -> Result<AddOptions> {
     while index < args.len() {
         match args[index].as_str() {
             "--from-stdin" | "--value-stdin" => options.from_stdin = true,
+            "--from-file" => {
+                options.from_file = Some(take_value(args, index, "--from-file")?);
+                index += 1;
+            }
             "--from-env" | "--value-env" => {
                 options.from_env = Some(validate_env_name(&take_value(
                     args,
@@ -403,16 +420,56 @@ fn read_secret_fields(kind: &str, options: &AddOptions) -> Result<BTreeMap<Strin
     }
 
     let required_field = default_secret_value_field(kind)?;
-    if options.from_stdin {
-        fields.insert(required_field.to_owned(), read_stdin()?);
-    }
-    if let Some(env_name) = &options.from_env {
-        fields.insert(
-            required_field.to_owned(),
-            env::var(env_name).map_err(|_| {
+    if kind == "file" {
+        if options.from_file.is_some() && (options.from_stdin || options.from_env.is_some()) {
+            return Err(AgvtError::new(
+                "use only one of --from-file, --from-stdin, or --from-env.",
+            ));
+        }
+        if let Some(path) = &options.from_file {
+            let bytes = fs::read(path)
+                .map_err(|error| AgvtError::new(format!("failed to read file {path}: {error}")))?;
+            if bytes.len() > MAX_RAW_FILE_BYTES {
+                return Err(AgvtError::new(format!(
+                    "file is too large: {path} is {} bytes, but base64-encoded vault fields \
+                     allow at most {MAX_RAW_FILE_BYTES} bytes of raw file content.",
+                    bytes.len()
+                )));
+            }
+            fields.insert(required_field.to_owned(), BASE64.encode(bytes));
+            if !fields.contains_key("filename") {
+                if let Some(file_name) = Path::new(path).file_name() {
+                    fields.insert(
+                        "filename".to_owned(),
+                        file_name.to_string_lossy().into_owned(),
+                    );
+                }
+            }
+        }
+        if options.from_stdin {
+            fields.insert(
+                required_field.to_owned(),
+                BASE64.encode(read_stdin_bytes()?),
+            );
+        }
+        if let Some(env_name) = &options.from_env {
+            let value = env::var(env_name).map_err(|_| {
                 AgvtError::new(format!("environment variable is missing: {env_name}"))
-            })?,
-        );
+            })?;
+            fields.insert(required_field.to_owned(), BASE64.encode(value.as_bytes()));
+        }
+    } else {
+        if options.from_stdin {
+            fields.insert(required_field.to_owned(), read_stdin()?);
+        }
+        if let Some(env_name) = &options.from_env {
+            fields.insert(
+                required_field.to_owned(),
+                env::var(env_name).map_err(|_| {
+                    AgvtError::new(format!("environment variable is missing: {env_name}"))
+                })?,
+            );
+        }
     }
     if let Some(field) = &options.field_stdin {
         fields.insert(canonical_payload_field(field)?, read_stdin()?);
@@ -434,6 +491,7 @@ fn default_secret_value_field(kind: &str) -> Result<&'static str> {
         "login" => "password",
         "totp" => "secret",
         "ssh-key" => "privateKey",
+        "file" => "content",
         "custom" | "secret" => "secret",
         _ => "secret",
     })
@@ -456,18 +514,56 @@ pub(crate) fn read_stdin() -> Result<String> {
     Ok(value)
 }
 
+fn read_stdin_bytes() -> Result<Vec<u8>> {
+    let mut value = Vec::new();
+    io::stdin().read_to_end(&mut value)?;
+    Ok(value)
+}
+
 fn handle_read(options: &GlobalOptions) -> Result<()> {
     let Some(target) = options.args.first() else {
         return Err(AgvtError::new(
             "read requires an item name or secret reference.",
         ));
     };
-    let field = options.args.get(1).map(String::as_str).unwrap_or("token");
-    let secret_ref = item_target_to_ref(target, &options.default_vault, field)?;
+    let mut field: Option<String> = None;
+    let mut decode = false;
+    for arg in &options.args[1..] {
+        match arg.as_str() {
+            "--decode" => decode = true,
+            value if value.starts_with("--") => {
+                return Err(AgvtError::new(format!("unknown read option: {value}")))
+            }
+            value => {
+                if field.is_some() {
+                    return Err(AgvtError::new("read accepts at most one field."));
+                }
+                field = Some(value.to_owned());
+            }
+        }
+    }
+    let field = field.unwrap_or_else(|| "token".to_owned());
+    let secret_ref = item_target_to_ref(target, &options.default_vault, &field)?;
     let vault_path = path_for_secret_ref(options, &secret_ref);
     let passphrase = require_passphrase_for_path(vault_path)?;
     let value = read_secret_field(vault_path, &passphrase, &secret_ref)?;
     audit::record("read", &secret_ref, "agvt");
+    if decode {
+        if value.trim().is_empty() {
+            return Err(AgvtError::new(format!(
+                "field `{}` is empty or missing for this item; nothing to decode.",
+                secret_ref.field
+            )));
+        }
+        let bytes = BASE64.decode(value.trim()).map_err(|_| {
+            AgvtError::new(
+                "--decode requires a base64-encoded field value \
+                 (for example the `content` field of a --kind file item).",
+            )
+        })?;
+        io::stdout().write_all(&bytes)?;
+        return Ok(());
+    }
     println!("{value}");
     Ok(())
 }
@@ -1387,7 +1483,9 @@ fn handle_list(options: &GlobalOptions) -> Result<()> {
 fn handle_delete(options: &GlobalOptions) -> Result<()> {
     let Some(target) = options.args.first() else {
         return Err(AgvtError::new(
-            "delete requires an item name or secret reference.",
+            "delete requires an item name or secret reference. \
+             Use agvt://<vault>/<item>/<field> to choose the vault scope; \
+             a bare item name targets the default vault tag.",
         ));
     };
     let secret_ref = item_target_to_ref(target, &options.default_vault, "token")?;
