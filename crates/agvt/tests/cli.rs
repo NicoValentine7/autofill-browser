@@ -1544,3 +1544,325 @@ fn help_documents_vault_scope_and_file_kind() {
     assert!(ja_stdout.contains("--from-file PATH"));
     assert!(ja_stdout.contains("--decode"));
 }
+
+#[test]
+fn from_file_records_size_and_sha256_metadata_visible_in_ls_json() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+    let key_path = directory.path().join("AuthKey_META.p8");
+    let key_bytes = b"agvt u1 residual test key bytes\n";
+    // Precomputed sha256 hex digest of key_bytes.
+    let expected_sha256 = "648842974acd51134a8497c6d7b071f3b4fe6f57572f3102bfde3eeefa036319";
+    fs::write(&key_path, key_bytes).unwrap();
+
+    let add_output = agvt_command(&vault_path)
+        .args(["add", "apple-meta-key", "--from-file"])
+        .arg(&key_path)
+        .output()
+        .unwrap();
+    assert!(
+        add_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let list_output = agvt_command(&vault_path)
+        .args(["ls", "--json"])
+        .output()
+        .unwrap();
+    assert!(list_output.status.success());
+    let stdout = String::from_utf8_lossy(&list_output.stdout);
+    let parsed: Value = serde_json::from_str(&stdout).unwrap();
+    let item = parsed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["item"] == "apple-meta-key")
+        .unwrap();
+    assert_eq!(item["kind"], "file");
+    assert_eq!(item["filename"], "AuthKey_META.p8");
+    assert_eq!(item["size"], key_bytes.len().to_string());
+    assert_eq!(item["sha256"], expected_sha256);
+    // Metadata only: the base64 content never appears in ls output.
+    let content_b64 = {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(key_bytes)
+    };
+    assert!(!stdout.contains(&content_b64));
+
+    // The same metadata is also stored as encrypted payload fields and can be
+    // read back through references.
+    let sha_output = agvt_command(&vault_path)
+        .args(["read", "agvt://dev/apple-meta-key/sha256"])
+        .output()
+        .unwrap();
+    assert!(
+        sha_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&sha_output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&sha_output.stdout).trim(),
+        expected_sha256
+    );
+    let size_output = agvt_command(&vault_path)
+        .args(["read", "agvt://dev/apple-meta-key/size"])
+        .output()
+        .unwrap();
+    assert!(size_output.status.success());
+    assert_eq!(String::from_utf8_lossy(&size_output.stdout).trim(), "32");
+}
+
+#[cfg(unix)]
+fn file_mode(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path).unwrap().permissions().mode() & 0o777
+}
+
+#[test]
+fn read_out_restores_original_bytes_with_private_permissions() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+    let key_path = directory.path().join("AuthKey_OUT.p12");
+    let out_path = directory.path().join("restored.p12");
+    let key_bytes: Vec<u8> = (0..=255u8).cycle().take(600).collect();
+    fs::write(&key_path, &key_bytes).unwrap();
+
+    let add_output = agvt_command(&vault_path)
+        .args(["add", "apple-out-key", "--from-file"])
+        .arg(&key_path)
+        .output()
+        .unwrap();
+    assert!(
+        add_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let read_output = agvt_command(&vault_path)
+        .args([
+            "read",
+            "agvt://dev/apple-out-key/content",
+            "--decode",
+            "--out",
+        ])
+        .arg(&out_path)
+        .output()
+        .unwrap();
+    assert!(
+        read_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&read_output.stderr)
+    );
+    // Stdout carries only metadata (byte count and path), never the content.
+    let stdout = String::from_utf8_lossy(&read_output.stdout);
+    assert!(stdout.contains("wrote 600 bytes"));
+    assert!(!read_output
+        .stdout
+        .windows(16)
+        .any(|window| window == &key_bytes[..16]));
+    assert_eq!(fs::read(&out_path).unwrap(), key_bytes);
+    #[cfg(unix)]
+    assert_eq!(file_mode(&out_path), 0o600);
+}
+
+#[test]
+fn read_out_refuses_to_overwrite_existing_file_unless_forced() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+    let key_path = directory.path().join("key.p8");
+    let out_path = directory.path().join("existing.p8");
+    let key_bytes = b"replacement key bytes";
+    fs::write(&key_path, key_bytes).unwrap();
+    fs::write(&out_path, b"precious existing data").unwrap();
+
+    let add_output = agvt_command(&vault_path)
+        .args(["add", "overwrite-key", "--from-file"])
+        .arg(&key_path)
+        .output()
+        .unwrap();
+    assert!(
+        add_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let blocked_output = agvt_command(&vault_path)
+        .args([
+            "read",
+            "agvt://dev/overwrite-key/content",
+            "--decode",
+            "--out",
+        ])
+        .arg(&out_path)
+        .output()
+        .unwrap();
+    assert!(!blocked_output.status.success());
+    assert!(String::from_utf8_lossy(&blocked_output.stderr)
+        .contains("refusing to overwrite existing file"));
+    assert_eq!(fs::read(&out_path).unwrap(), b"precious existing data");
+
+    let forced_output = agvt_command(&vault_path)
+        .args([
+            "read",
+            "agvt://dev/overwrite-key/content",
+            "--decode",
+            "--out",
+        ])
+        .arg(&out_path)
+        .arg("--force")
+        .output()
+        .unwrap();
+    assert!(
+        forced_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&forced_output.stderr)
+    );
+    assert_eq!(fs::read(&out_path).unwrap(), key_bytes);
+    #[cfg(unix)]
+    assert_eq!(file_mode(&out_path), 0o600);
+}
+
+#[test]
+fn read_succeeds_with_warning_for_unknown_item_kind() {
+    use std::num::NonZeroU32;
+
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use base64::Engine;
+    use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
+    use ring::pbkdf2;
+
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+    let passphrase = "test-passphrase-with-enough-length";
+
+    // Seed the vault through the CLI so file format and KDF are authentic.
+    let add_output = agvt_command(&vault_path)
+        .args(["add", "github"])
+        .env("GITHUB_TOKEN", "dummy_known_kind_token")
+        .output()
+        .unwrap();
+    assert!(
+        add_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    // Inject an item with a kind this binary does not know directly into the
+    // vault JSON, simulating a vault written by a newer agvt version.
+    let mut vault: Value = serde_json::from_str(&fs::read_to_string(&vault_path).unwrap()).unwrap();
+    let salt = BASE64
+        .decode(vault["kdf"]["salt"].as_str().unwrap())
+        .unwrap();
+    let iterations = u32::try_from(vault["kdf"]["iterations"].as_u64().unwrap()).unwrap();
+    let mut key_bytes = [0_u8; 32];
+    pbkdf2::derive(
+        pbkdf2::PBKDF2_HMAC_SHA256,
+        NonZeroU32::new(iterations).unwrap(),
+        &salt,
+        passphrase.as_bytes(),
+        &mut key_bytes,
+    );
+    let key = LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &key_bytes).unwrap());
+    let vault_id = vault["vaultId"].as_str().unwrap().to_owned();
+    let storage_name = "future-item";
+    let kind = "quantum-key";
+    // Mirrors vault::build_item_aad.
+    let aad = format!(
+        "[\"item\",1,\"PBKDF2-SHA256/AES-GCM\",{},{},{}]",
+        serde_json::to_string(&vault_id).unwrap(),
+        serde_json::to_string(storage_name).unwrap(),
+        serde_json::to_string(kind).unwrap()
+    );
+    let payload =
+        r#"{"schemaVersion":1,"kind":"quantum-key","secret":"future-value","novelField":"x"}"#;
+    let iv = [7_u8; 12];
+    let nonce = Nonce::try_assume_unique_for_key(&iv).unwrap();
+    let mut in_out = payload.as_bytes().to_vec();
+    key.seal_in_place_append_tag(nonce, Aad::from(aad.as_bytes()), &mut in_out)
+        .unwrap();
+    vault["items"][storage_name] = serde_json::json!({
+        "schemaVersion": 1,
+        "kind": kind,
+        "label": "Future",
+        "encryptedValue": {
+            "schemaVersion": 1,
+            "algorithm": "AES-GCM",
+            "iv": BASE64.encode(iv),
+            "ciphertext": BASE64.encode(&in_out)
+        },
+        "createdAt": "0",
+        "updatedAt": "0"
+    });
+    fs::write(
+        &vault_path,
+        format!("{}\n", serde_json::to_string_pretty(&vault).unwrap()),
+    )
+    .unwrap();
+
+    // Reading the unknown-kind item succeeds with a stderr warning.
+    let read_output = agvt_command(&vault_path)
+        .args(["read", "agvt://dev/future-item/secret"])
+        .output()
+        .unwrap();
+    assert!(
+        read_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&read_output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&read_output.stdout).trim(),
+        "future-value"
+    );
+    assert!(String::from_utf8_lossy(&read_output.stderr)
+        .contains("unknown Vault item kind `quantum-key`"));
+
+    // Known items in the same vault keep working, ls shows both, and the
+    // write path stays strict for unknown kinds.
+    let token_output = agvt_command(&vault_path)
+        .args(["read", "agvt://dev/github/token"])
+        .output()
+        .unwrap();
+    assert!(token_output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&token_output.stdout).trim(),
+        "dummy_known_kind_token"
+    );
+    let list_output = agvt_command(&vault_path)
+        .args(["ls", "--json"])
+        .output()
+        .unwrap();
+    assert!(list_output.status.success());
+    let list_stdout = String::from_utf8_lossy(&list_output.stdout);
+    assert!(list_stdout.contains("future-item"));
+    assert!(list_stdout.contains("github"));
+    let strict_add_output = agvt_command(&vault_path)
+        .args([
+            "add",
+            "another",
+            "--kind",
+            "quantum-key",
+            "--from-env",
+            "SOME_ENV",
+        ])
+        .env("SOME_ENV", "value")
+        .output()
+        .unwrap();
+    assert!(!strict_add_output.status.success());
+    assert!(String::from_utf8_lossy(&strict_add_output.stderr).contains("kind must be one of"));
+}
+
+#[test]
+fn read_force_without_out_is_rejected() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault_path = directory.path().join("agent-vault.json");
+
+    let output = agvt_command(&vault_path)
+        .args(["read", "agvt://dev/github/token", "--force"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--force is only supported with --out")
+    );
+}

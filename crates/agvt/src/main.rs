@@ -436,6 +436,10 @@ fn read_secret_fields(kind: &str, options: &AddOptions) -> Result<BTreeMap<Strin
                     bytes.len()
                 )));
             }
+            // Integrity metadata derived from the original file. These are
+            // computed facts, so they overwrite any explicit --field values.
+            fields.insert("size".to_owned(), bytes.len().to_string());
+            fields.insert("sha256".to_owned(), sha256_hex(&bytes));
             fields.insert(required_field.to_owned(), BASE64.encode(bytes));
             if !fields.contains_key("filename") {
                 if let Some(file_name) = Path::new(path).file_name() {
@@ -508,6 +512,14 @@ fn insert_optional_field(
     Ok(())
 }
 
+fn sha256_hex(bytes: &[u8]) -> String {
+    ring::digest::digest(&ring::digest::SHA256, bytes)
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 pub(crate) fn read_stdin() -> Result<String> {
     let mut value = String::new();
     io::stdin().read_to_string(&mut value)?;
@@ -528,9 +540,17 @@ fn handle_read(options: &GlobalOptions) -> Result<()> {
     };
     let mut field: Option<String> = None;
     let mut decode = false;
-    for arg in &options.args[1..] {
-        match arg.as_str() {
+    let mut out: Option<PathBuf> = None;
+    let mut force = false;
+    let mut index = 1;
+    while index < options.args.len() {
+        match options.args[index].as_str() {
             "--decode" => decode = true,
+            "--force" => force = true,
+            "--out" => {
+                out = Some(PathBuf::from(take_value(&options.args, index, "--out")?));
+                index += 1;
+            }
             value if value.starts_with("--") => {
                 return Err(AgvtError::new(format!("unknown read option: {value}")))
             }
@@ -541,6 +561,10 @@ fn handle_read(options: &GlobalOptions) -> Result<()> {
                 field = Some(value.to_owned());
             }
         }
+        index += 1;
+    }
+    if force && out.is_none() {
+        return Err(AgvtError::new("--force is only supported with --out."));
     }
     let field = field.unwrap_or_else(|| "token".to_owned());
     let secret_ref = item_target_to_ref(target, &options.default_vault, &field)?;
@@ -548,23 +572,67 @@ fn handle_read(options: &GlobalOptions) -> Result<()> {
     let passphrase = require_passphrase_for_path(vault_path)?;
     let value = read_secret_field(vault_path, &passphrase, &secret_ref)?;
     audit::record("read", &secret_ref, "agvt");
-    if decode {
-        if value.trim().is_empty() {
-            return Err(AgvtError::new(format!(
-                "field `{}` is empty or missing for this item; nothing to decode.",
-                secret_ref.field
-            )));
-        }
-        let bytes = BASE64.decode(value.trim()).map_err(|_| {
+    if (decode || out.is_some()) && value.trim().is_empty() {
+        return Err(AgvtError::new(format!(
+            "field `{}` is empty or missing for this item; nothing to {}.",
+            secret_ref.field,
+            if decode { "decode" } else { "write" }
+        )));
+    }
+    let bytes: Vec<u8> = if decode {
+        BASE64.decode(value.trim()).map_err(|_| {
             AgvtError::new(
                 "--decode requires a base64-encoded field value \
                  (for example the `content` field of a --kind file item).",
             )
-        })?;
+        })?
+    } else {
+        value.clone().into_bytes()
+    };
+    if let Some(out_path) = out {
+        write_read_output_file(&out_path, &bytes, force)?;
+        // Byte count and path are metadata; the value itself never hits stdout.
+        println!("wrote {} bytes to {}", bytes.len(), out_path.display());
+        return Ok(());
+    }
+    if decode {
         io::stdout().write_all(&bytes)?;
         return Ok(());
     }
     println!("{value}");
+    Ok(())
+}
+
+/// Writes a read value straight to a file, avoiding shell redirection (which
+/// risks encoding mangling and log mixing). Files are created with 0600 and
+/// existing files are never overwritten unless --force is given.
+fn write_read_output_file(path: &Path, bytes: &[u8], force: bool) -> Result<()> {
+    let mut open_options = fs::OpenOptions::new();
+    open_options.write(true);
+    if force {
+        open_options.create(true).truncate(true);
+    } else {
+        open_options.create_new(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        open_options.mode(0o600);
+    }
+    let mut file = open_options.open(path).map_err(|error| {
+        if error.kind() == io::ErrorKind::AlreadyExists {
+            AgvtError::new(format!(
+                "refusing to overwrite existing file: {}. Pass --force to allow overwriting.",
+                path.display()
+            ))
+        } else {
+            AgvtError::new(format!("failed to write {}: {error}", path.display()))
+        }
+    })?;
+    file.write_all(bytes)?;
+    // The creation mode does not apply when --force reuses an existing file,
+    // so tighten permissions explicitly in every case.
+    vault::set_private_permissions(path)?;
     Ok(())
 }
 
@@ -1451,13 +1519,21 @@ fn handle_list(options: &GlobalOptions) -> Result<()> {
         let json_items: Vec<_> = items
             .iter()
             .map(|item| {
-                serde_json::json!({
+                let mut json_item = serde_json::json!({
                     "vault": &item.vault,
                     "item": &item.item,
                     "kind": &item.kind,
                     "label": &item.label,
                     "updatedAt": &item.updated_at
-                })
+                });
+                // Displayable metadata only (file items: filename/size/sha256);
+                // secret values are never part of item metadata.
+                if let Some(metadata) = &item.metadata {
+                    for (key, value) in metadata {
+                        json_item[key] = serde_json::Value::String(value.clone());
+                    }
+                }
+                json_item
             })
             .collect();
         println!(

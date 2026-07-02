@@ -61,6 +61,12 @@ pub struct VaultItem {
     pub label: String,
     #[serde(rename = "encryptedValue")]
     pub encrypted_value: EncryptedValue,
+    /// Displayable metadata only, never secret values. Populated for file
+    /// items (filename/size/sha256) so `ls --json` can show them without
+    /// unlocking the vault. The authoritative copies live encrypted in the
+    /// payload fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<BTreeMap<String, String>>,
     #[serde(rename = "createdAt")]
     pub created_at: String,
     #[serde(rename = "updatedAt")]
@@ -111,6 +117,7 @@ pub struct ListedItem {
     pub item: String,
     pub kind: String,
     pub label: String,
+    pub metadata: Option<BTreeMap<String, String>>,
     pub updated_at: String,
 }
 
@@ -162,6 +169,22 @@ pub fn validate_item_kind(value: &str) -> Result<String> {
     }
 }
 
+/// Read-path kind handling. Writes stay strict (`validate_item_kind`), but an
+/// item written by a newer agvt with a kind this binary does not know must
+/// still be readable: warn on stderr and treat it as a generic secret instead
+/// of failing, so adding kinds never breaks older readers (U1 forward
+/// compatibility design).
+fn normalize_item_kind_for_read(value: &str) -> String {
+    let normalized = value.trim().to_ascii_lowercase();
+    if validate_item_kind(&normalized).is_err() {
+        eprintln!(
+            "warning: unknown Vault item kind `{normalized}`; treating it as a generic secret. \
+             A newer agvt version may support it natively."
+        );
+    }
+    normalized
+}
+
 pub fn canonical_payload_field(value: &str) -> Result<String> {
     let trimmed = value.trim();
     Ok(match trimmed {
@@ -175,9 +198,8 @@ pub fn canonical_payload_field(value: &str) -> Result<String> {
         "totp-secret" => "secret".to_owned(),
         "token" | "serviceUrl" | "accountName" | "accountId" | "tokenId" | "expiresOn"
         | "notes" | "secret" | "password" | "username" | "url" | "issuer" | "privateKey"
-        | "publicKey" | "passphrase" | "period" | "digits" | "content" | "filename" => {
-            trimmed.to_owned()
-        }
+        | "publicKey" | "passphrase" | "period" | "digits" | "content" | "filename" | "size"
+        | "sha256" => trimmed.to_owned(),
         _ => {
             return Err(AgvtError::new(
                 "field must be a supported Agent Vault field name.",
@@ -216,14 +238,17 @@ fn parse_secret_payload(plaintext: &str) -> Result<(String, BTreeMap<String, Str
         .get("kind")
         .and_then(Value::as_str)
         .ok_or_else(|| AgvtError::new("Vault item payload is missing kind."))?;
-    let normalized_kind = validate_item_kind(kind)?;
+    let normalized_kind = normalize_item_kind_for_read(kind);
     let mut fields = BTreeMap::new();
     for (field, value) in object {
         if field == "schemaVersion" || field == "kind" {
             continue;
         }
         if let Some(string_value) = value.as_str() {
-            fields.insert(canonical_payload_field(field)?, string_value.to_owned());
+            // Forward compatibility: keep field names a newer agvt introduced
+            // instead of failing the whole read.
+            let canonical_field = canonical_payload_field(field).unwrap_or_else(|_| field.clone());
+            fields.insert(canonical_field, string_value.to_owned());
         }
     }
     Ok((normalized_kind, fields))
@@ -627,6 +652,21 @@ pub fn upsert_secret(path: &Path, passphrase: &str, input: UpsertSecretInput) ->
             "{kind} item requires encrypted field `{required_field}`."
         )));
     }
+    // Displayable metadata allowlist for file items. Only integrity metadata
+    // (filename/size/sha256) is mirrored in plaintext; content stays encrypted.
+    let metadata = if kind == "file" {
+        let entries: BTreeMap<String, String> = ["filename", "size", "sha256"]
+            .iter()
+            .filter_map(|name| {
+                fields
+                    .get(*name)
+                    .map(|value| ((*name).to_owned(), value.clone()))
+            })
+            .collect();
+        (!entries.is_empty()).then_some(entries)
+    } else {
+        None
+    };
     let payload = build_secret_payload(&kind, &fields)?;
     let encrypted_value = encrypt_text(
         &payload,
@@ -636,6 +676,7 @@ pub fn upsert_secret(path: &Path, passphrase: &str, input: UpsertSecretInput) ->
     let item = VaultItem {
         schema_version: SCHEMA_VERSION,
         kind,
+        metadata,
         label: input
             .label
             .filter(|value| !value.trim().is_empty())
@@ -734,6 +775,7 @@ pub fn list_items(path: &Path) -> Result<Vec<ListedItem>> {
                 item: item_name,
                 kind: item.kind.clone(),
                 label: item.label.clone(),
+                metadata: item.metadata.clone(),
                 updated_at: item.updated_at.clone(),
             }
         })
@@ -796,6 +838,123 @@ mod tests {
             .unwrap(),
             "account-123"
         );
+    }
+
+    #[test]
+    fn reads_unknown_kind_items_as_generic_secret_without_failing() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("agent-vault.json");
+        let passphrase = "test-passphrase-with-enough-length";
+
+        // Seed the vault with a known item so the file exists.
+        let seed_ref = item_target_to_ref("seed", "dev", "token").unwrap();
+        upsert_api_token(
+            &path,
+            passphrase,
+            UpsertTokenInput {
+                secret_ref: seed_ref.clone(),
+                token: "seed-token".to_owned(),
+                label: None,
+                service_url: None,
+                account_name: None,
+                account_id: None,
+                token_id: None,
+                expires_on: None,
+                notes: None,
+            },
+        )
+        .unwrap();
+
+        // Hand-craft an item whose kind (and one field) this binary does not
+        // know, simulating a vault written by a newer agvt version.
+        let mut vault = load_vault(&path).unwrap().unwrap();
+        let key = unlock_vault(&vault, passphrase).unwrap();
+        let storage_name = "future-item".to_owned();
+        let payload =
+            r#"{"schemaVersion":1,"kind":"quantum-key","secret":"future-value","novelField":"x"}"#;
+        let encrypted_value = encrypt_text(
+            payload,
+            &key,
+            &build_item_aad(&vault, &storage_name, "quantum-key"),
+        )
+        .unwrap();
+        vault.items.insert(
+            storage_name,
+            VaultItem {
+                schema_version: SCHEMA_VERSION,
+                kind: "quantum-key".to_owned(),
+                label: "Future".to_owned(),
+                encrypted_value,
+                metadata: None,
+                created_at: now_stamp(),
+                updated_at: now_stamp(),
+            },
+        );
+        save_vault(&path, &vault).unwrap();
+
+        // Reading the unknown-kind item succeeds instead of erroring, and
+        // unknown payload fields survive the read path.
+        let future_ref = item_target_to_ref("future-item", "dev", "secret").unwrap();
+        let (kind, fields) = read_secret_payload(&path, passphrase, &future_ref).unwrap();
+        assert_eq!(kind, "quantum-key");
+        assert_eq!(
+            fields.get("secret").map(String::as_str),
+            Some("future-value")
+        );
+        assert_eq!(fields.get("novelField").map(String::as_str), Some("x"));
+        assert_eq!(
+            read_secret_field(&path, passphrase, &future_ref).unwrap(),
+            "future-value"
+        );
+
+        // Known items in the same vault keep working, and writes stay strict.
+        assert_eq!(
+            read_secret_field(&path, passphrase, &seed_ref).unwrap(),
+            "seed-token"
+        );
+        assert!(validate_item_kind("quantum-key").is_err());
+    }
+
+    #[test]
+    fn file_items_expose_integrity_metadata_in_list_without_content() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("agent-vault.json");
+        let passphrase = "test-passphrase-with-enough-length";
+        let secret_ref = item_target_to_ref("apple-key", "dev", "content").unwrap();
+        let mut fields = BTreeMap::new();
+        fields.insert("content".to_owned(), "ZHVtbXk=".to_owned());
+        fields.insert("filename".to_owned(), "AuthKey_TEST.p8".to_owned());
+        fields.insert("size".to_owned(), "5".to_owned());
+        fields.insert(
+            "sha256".to_owned(),
+            "b5a2c96250612366ea272ffac6d9744aaf4b45aacd96aa7cfcb931ee3b558259".to_owned(),
+        );
+        upsert_secret(
+            &path,
+            passphrase,
+            UpsertSecretInput {
+                secret_ref,
+                kind: "file".to_owned(),
+                label: None,
+                fields,
+            },
+        )
+        .unwrap();
+
+        let items = list_items(&path).unwrap();
+        let metadata = items[0].metadata.as_ref().unwrap();
+        assert_eq!(
+            metadata.get("filename").map(String::as_str),
+            Some("AuthKey_TEST.p8")
+        );
+        assert_eq!(metadata.get("size").map(String::as_str), Some("5"));
+        assert_eq!(
+            metadata.get("sha256").map(String::as_str),
+            Some("b5a2c96250612366ea272ffac6d9744aaf4b45aacd96aa7cfcb931ee3b558259")
+        );
+        // The base64 content never leaks into the plaintext part of the file.
+        let raw = fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains("ZHVtbXk="));
     }
 
     #[test]
