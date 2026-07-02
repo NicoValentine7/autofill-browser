@@ -10,11 +10,10 @@
   "d1_databases": [
     {
       "binding": "DB",
-      // database_id はプレースホルダ。本番デプロイ（ユーザー確認ゲート）の際に
-      // `npx wrangler d1 create autofill-browser-sync` で作成した ID に差し替える。
+      // 本番 D1（2026-07-02 デプロイ、ユーザー GO 済み）。
       // ローカル開発は `npx wrangler dev` + `pnpm migrate:local` で完結する。
       "database_name": "autofill-browser-sync",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "e88f9d46-85a3-4b70-a5bd-cee1c407ba46",
       "migrations_dir": "migrations"
     }
   ]
