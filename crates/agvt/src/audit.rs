@@ -126,6 +126,19 @@ pub fn list_entries(path: &Path) -> Result<Vec<AuditEntry>> {
     Ok(entries)
 }
 
+/// Serializes tests (across modules) that mutate process environment
+/// variables such as `AGVT_AUDIT_PATH`: the environment is process-global,
+/// so every env-mutating test in this crate must hold this one lock.
+#[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn lock_test_env() -> std::sync::MutexGuard<'static, ()> {
+    TEST_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

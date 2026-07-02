@@ -102,6 +102,15 @@ Commands:
       Search topics, tags, and open/standard bodies. locked bodies are
       never searched. All dossier writes and locked reads are audit-logged.
 
+  agvt mcp
+      Start the Agent Home MCP server on stdio (JSON-RPC 2.0, one JSON
+      message per line, EOF stops the server). Tools: dossier_search,
+      dossier_read, charter_check, vault_ls, secret_handoff.
+      Raw secret values and locked dossier bodies never appear in MCP
+      responses: locked material and secret_handoff answers carry an
+      agvt:// reference plus `agvt run` consumption instructions instead.
+      Every tool call is audit-logged with caller "mcp".
+
   agvt ls [--json]
       List non-secret metadata only.
 
@@ -252,6 +261,14 @@ const HELP_JA: &str = r#"agvt - Agent Vault CLI
   agvt dossier search <query> [--tier TIER] [--json]
       topic・tags・open/standardのbodyを検索する。lockedのbodyは
       検索されない。dossierの全writeとlocked readはauditに記録される
+
+  agvt mcp
+      Agent HomeのMCP serverをstdioで起動する（JSON-RPC 2.0、1行1メッセージ、
+      EOFで終了）。tool: dossier_search, dossier_read, charter_check,
+      vault_ls, secret_handoff
+      secret値とlocked dossier bodyはMCP responseに決して含めない。
+      locked本文とsecret_handoffは agvt:// 参照と `agvt run` での消費手順
+      だけを返す。全tool callはcaller "mcp" でaudit logに記録される
 
   agvt ls [--json]
       secret値を出さずにmetadataだけ一覧する

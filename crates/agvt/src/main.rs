@@ -5,6 +5,7 @@ mod dossier;
 mod error;
 mod help;
 mod keychain;
+mod mcp;
 mod prepare;
 mod presets;
 mod reference;
@@ -94,6 +95,7 @@ fn run() -> Result<()> {
         "prepare" => handle_prepare(&options),
         "totp" => handle_totp(&options),
         "keychain" => handle_keychain(&options),
+        "mcp" => mcp::handle_mcp(&options),
         "cloudflare" => handle_cloudflare(&options),
         "ls" | "list" => handle_list(&options),
         "audit" => handle_audit(&options),
