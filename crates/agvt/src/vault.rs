@@ -507,7 +507,7 @@ fn acquire_vault_write_lock(path: &Path) -> Result<VaultWriteLock> {
     }
 }
 
-fn ensure_parent_dir(path: &Path) -> Result<()> {
+pub(crate) fn ensure_parent_dir(path: &Path) -> Result<()> {
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -518,14 +518,14 @@ fn ensure_parent_dir(path: &Path) -> Result<()> {
 }
 
 #[cfg(unix)]
-fn set_private_permissions(path: &Path) -> Result<()> {
+pub(crate) fn set_private_permissions(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
     Ok(())
 }
 
 #[cfg(not(unix))]
-fn set_private_permissions(_path: &Path) -> Result<()> {
+pub(crate) fn set_private_permissions(_path: &Path) -> Result<()> {
     Ok(())
 }
 
