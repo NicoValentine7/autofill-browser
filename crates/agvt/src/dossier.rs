@@ -883,7 +883,6 @@ fn print_summaries(summaries: &[EntrySummary], as_json: bool, empty_message: &st
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::TEST_ENV_LOCK as ENV_LOCK;
 
     const PASSPHRASE: &str = "test-passphrase-with-enough-length";
 
@@ -1093,7 +1092,7 @@ mod tests {
 
     #[test]
     fn writes_and_locked_reads_are_audited() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::audit::lock_test_env();
         let directory = tempfile::tempdir().unwrap();
         let dossier_path_value = directory.path().join("dossier.json");
         let audit_path = directory.path().join("audit.jsonl");
@@ -1142,7 +1141,7 @@ mod tests {
 
     #[test]
     fn dossier_path_prefers_explicit_env_override() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::audit::lock_test_env();
         env::set_var(AGVT_DOSSIER_PATH_ENV, "/tmp/custom-dossier.json");
         assert_eq!(dossier_path(), PathBuf::from("/tmp/custom-dossier.json"));
         env::remove_var(AGVT_DOSSIER_PATH_ENV);

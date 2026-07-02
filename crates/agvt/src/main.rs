@@ -5,6 +5,7 @@ mod dossier;
 mod error;
 mod help;
 mod keychain;
+mod mcp;
 mod prepare;
 mod presets;
 mod reference;
@@ -33,12 +34,6 @@ use vault::{
     validate_item_kind, validate_passphrase_value, UpsertSecretInput, UpsertTokenInput,
     AGVT_PASSPHRASE_ENV, LEGACY_PASSPHRASE_ENV,
 };
-
-/// Serializes tests across modules that mutate process environment variables
-/// (audit/dossier/charter path overrides). Every env-mutating test must hold
-/// this single crate-wide lock; per-module locks would still race each other.
-#[cfg(test)]
-pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Debug)]
 pub(crate) struct GlobalOptions {
@@ -101,6 +96,7 @@ fn run() -> Result<()> {
         "prepare" => handle_prepare(&options),
         "totp" => handle_totp(&options),
         "keychain" => handle_keychain(&options),
+        "mcp" => mcp::handle_mcp(&options),
         "cloudflare" => handle_cloudflare(&options),
         "ls" | "list" => handle_list(&options),
         "audit" => handle_audit(&options),

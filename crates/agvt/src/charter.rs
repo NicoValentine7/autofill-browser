@@ -124,7 +124,7 @@ fn load_charter_strict(path: &Path) -> Result<CharterFile> {
 ///
 /// A missing, unreadable, or malformed charter file never crashes a consumer;
 /// it degrades to an empty rule set so every check resolves to `confirm`.
-fn load_charter_lenient(path: &Path) -> CharterFile {
+pub(crate) fn load_charter_lenient(path: &Path) -> CharterFile {
     match load_charter_strict(path) {
         Ok(charter) => charter,
         Err(error) => {
@@ -197,7 +197,7 @@ pub fn resolve(
     }
 }
 
-fn rule_json(rule: &CharterRule) -> serde_json::Value {
+pub(crate) fn rule_json(rule: &CharterRule) -> serde_json::Value {
     serde_json::json!({
         "capability": rule.capability,
         "scope": rule.scope,
