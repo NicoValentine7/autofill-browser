@@ -1,4 +1,5 @@
 mod audit;
+mod charter;
 mod cloudflare;
 mod error;
 mod help;
@@ -94,6 +95,7 @@ fn run() -> Result<()> {
         "cloudflare" => handle_cloudflare(&options),
         "ls" | "list" => handle_list(&options),
         "audit" => handle_audit(&options),
+        "charter" => charter::handle_charter(&options.args),
         "delete" | "rm" => handle_delete(&options),
         "presets" => handle_presets(&options.args),
         "version" | "--version" | "-V" => {

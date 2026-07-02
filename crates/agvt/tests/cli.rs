@@ -1000,3 +1000,177 @@ fn concurrent_writes_keep_all_items() {
     assert!(list_stdout.contains("\"item\": \"github\""));
     assert!(!vault_path.with_file_name("agent-vault.json.lock").exists());
 }
+
+fn charter_command(directory: &Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_agvt"));
+    command
+        // Keep test charter and audit entries out of the real user files.
+        .env("AGVT_CHARTER_PATH", directory.join("charter.json"))
+        .env("AGVT_AUDIT_PATH", directory.join("audit.jsonl"));
+    command
+}
+
+#[test]
+fn charter_check_matches_autonomy_ledger_rules_and_records_writes() {
+    let directory = tempfile::tempdir().unwrap();
+
+    // Same three autonomy levels as the per-repository orchestration ledger
+    // (auto / branch-auto / confirm), defined inline as test data.
+    for (scope, autonomy) in [
+        ("repo:autofill-browser", "auto"),
+        ("repo:agent-times", "branch-auto"),
+        ("repo:iam", "confirm"),
+    ] {
+        let add_output = charter_command(directory.path())
+            .args([
+                "charter",
+                "add",
+                "commit",
+                scope,
+                autonomy,
+                "--conditions",
+                "build/test GREEN",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            add_output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&add_output.stderr)
+        );
+    }
+
+    for (scope, autonomy) in [
+        ("repo:autofill-browser", "auto"),
+        ("repo:agent-times", "branch-auto"),
+        ("repo:iam", "confirm"),
+    ] {
+        let check_output = charter_command(directory.path())
+            .args(["charter", "check", "commit", scope])
+            .output()
+            .unwrap();
+        assert!(
+            check_output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&check_output.stderr)
+        );
+        let verdict: Value = serde_json::from_slice(&check_output.stdout).unwrap();
+        assert_eq!(verdict["capability"], "commit");
+        assert_eq!(verdict["scope"], scope);
+        assert_eq!(verdict["autonomy"], autonomy);
+        assert_eq!(verdict["matchedRule"]["scope"], scope);
+        assert_eq!(verdict["matchedRule"]["conditions"], "build/test GREEN");
+    }
+
+    // Every charter write must land in the audit log (self-escalation
+    // detection line, ADR 0013).
+    let audit_raw = fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
+    assert_eq!(audit_raw.lines().count(), 3);
+    assert!(audit_raw.contains("\"op\":\"charter-add\""));
+    assert!(audit_raw.contains("agvt://charter/commit/repo:autofill-browser"));
+    assert!(audit_raw.contains("agvt://charter/commit/repo:iam"));
+
+    // The charter file itself stays plaintext and diffable.
+    let charter_raw = fs::read_to_string(directory.path().join("charter.json")).unwrap();
+    assert!(charter_raw.contains("\"autonomy\": \"branch-auto\""));
+}
+
+#[test]
+fn charter_check_falls_back_to_confirm_for_undefined_capability() {
+    let directory = tempfile::tempdir().unwrap();
+
+    // No charter file at all: still a clean confirm verdict.
+    let check_output = charter_command(directory.path())
+        .args(["charter", "check", "deploy", "repo:autofill-browser"])
+        .output()
+        .unwrap();
+    assert!(
+        check_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&check_output.stderr)
+    );
+    let verdict: Value = serde_json::from_slice(&check_output.stdout).unwrap();
+    assert_eq!(verdict["autonomy"], "confirm");
+    assert!(verdict["matchedRule"].is_null());
+}
+
+#[test]
+fn charter_check_survives_corrupt_charter_file_with_confirm() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(directory.path().join("charter.json"), "{ not json").unwrap();
+
+    let check_output = charter_command(directory.path())
+        .args(["charter", "check", "commit", "repo:autofill-browser"])
+        .output()
+        .unwrap();
+    assert!(
+        check_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&check_output.stderr)
+    );
+    let verdict: Value = serde_json::from_slice(&check_output.stdout).unwrap();
+    assert_eq!(verdict["autonomy"], "confirm");
+    assert!(verdict["matchedRule"].is_null());
+    assert!(String::from_utf8_lossy(&check_output.stderr).contains("charter file is unreadable"));
+
+    // Writes must refuse to clobber the corrupt file.
+    let add_output = charter_command(directory.path())
+        .args(["charter", "add", "commit", "repo:iam", "auto"])
+        .output()
+        .unwrap();
+    assert!(!add_output.status.success());
+    assert!(String::from_utf8_lossy(&add_output.stderr).contains("charter file is unreadable"));
+}
+
+#[test]
+fn charter_add_upserts_and_ls_show_report_rules() {
+    let directory = tempfile::tempdir().unwrap();
+
+    let add_output = charter_command(directory.path())
+        .args(["charter", "add", "commit", "repo:*", "confirm"])
+        .output()
+        .unwrap();
+    assert!(add_output.status.success());
+
+    // Re-adding the same capability/scope replaces the rule instead of
+    // duplicating it.
+    let upsert_output = charter_command(directory.path())
+        .args(["charter", "add", "commit", "repo:*", "branch-auto"])
+        .output()
+        .unwrap();
+    assert!(upsert_output.status.success());
+
+    let ls_output = charter_command(directory.path())
+        .args(["charter", "ls", "--json"])
+        .output()
+        .unwrap();
+    assert!(ls_output.status.success());
+    let listed: Value = serde_json::from_slice(&ls_output.stdout).unwrap();
+    let rules = listed["rules"].as_array().unwrap();
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0]["autonomy"], "branch-auto");
+
+    let show_output = charter_command(directory.path())
+        .args(["charter", "show", "commit"])
+        .output()
+        .unwrap();
+    assert!(show_output.status.success());
+    assert!(String::from_utf8_lossy(&show_output.stdout).contains("repo:*\tbranch-auto"));
+
+    // Wildcard prefix rule applies to unseen repositories.
+    let check_output = charter_command(directory.path())
+        .args(["charter", "check", "commit", "repo:brand-new"])
+        .output()
+        .unwrap();
+    let verdict: Value = serde_json::from_slice(&check_output.stdout).unwrap();
+    assert_eq!(verdict["autonomy"], "branch-auto");
+    assert_eq!(verdict["matchedRule"]["scope"], "repo:*");
+
+    let bad_output = charter_command(directory.path())
+        .args(["charter", "add", "commit", "repo:x", "yolo"])
+        .output()
+        .unwrap();
+    assert!(!bad_output.status.success());
+    assert!(String::from_utf8_lossy(&bad_output.stderr)
+        .contains("autonomy must be auto, branch-auto, confirm, or deny."));
+}
