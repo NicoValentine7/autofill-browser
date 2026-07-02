@@ -80,6 +80,11 @@ Commands:
   agvt ls [--json]
       List non-secret metadata only.
 
+  agvt audit ls [--json]
+      Show vault operation history from the append-only audit log.
+      Entries hold op, agvt:// ref, UTC epoch time, and caller command name.
+      Secret values are never recorded.
+
   agvt delete <item-or-ref>
       Delete an item.
 
@@ -96,6 +101,7 @@ Environment:
   AGVT_PASSPHRASE      Vault passphrase. Keychain is used if absent on macOS.
   AGVT_PATH            Repo-local vault path. Default: .local/agent-vault.json
   AGVT_GLOBAL_PATH     Global vault path. Default: ~/.local/share/agvt/agent-vault.json
+  AGVT_AUDIT_PATH      Audit log path. Default: ~/.local/share/agvt/audit.jsonl
   AGVT_KEYCHAIN=0      Disable Keychain lookup.
   AGVT_LANG=ja|en      Choose help language.
 
@@ -182,6 +188,11 @@ const HELP_JA: &str = r#"agvt - Agent Vault CLI
   agvt ls [--json]
       secret値を出さずにmetadataだけ一覧する
 
+  agvt audit ls [--json]
+      append-onlyのaudit logからvault操作履歴を見る
+      記録は操作名・agvt://参照・UTC epoch時刻・呼び出しコマンド名のみ
+      secret値は決して記録されない
+
   agvt delete <item-or-ref>
       itemを削除する
 
@@ -198,6 +209,7 @@ secret reference:
   AGVT_PASSPHRASE      Vault passphrase。macOSでは未指定時にKeychainを見る
   AGVT_PATH            repo-local Vault path。default: .local/agent-vault.json
   AGVT_GLOBAL_PATH     global Vault path。default: ~/.local/share/agvt/agent-vault.json
+  AGVT_AUDIT_PATH      audit log path。default: ~/.local/share/agvt/audit.jsonl
   AGVT_KEYCHAIN=0      Keychain lookupを無効化
   AGVT_LANG=ja|en      help languageを選ぶ
 
