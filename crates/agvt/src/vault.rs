@@ -27,12 +27,12 @@ pub const AGVT_GLOBAL_PATH_ENV: &str = "AGVT_GLOBAL_PATH";
 pub const LEGACY_PATH_ENV: &str = "AUTOFILL_AGENT_VAULT_PATH";
 
 const SCHEMA_VERSION: u8 = 1;
-const DEFAULT_KDF_ITERATIONS: u32 = 600_000;
+pub(crate) const DEFAULT_KDF_ITERATIONS: u32 = 600_000;
 const MIN_KDF_ITERATIONS: u32 = 250_000;
 const MAX_KDF_ITERATIONS: u32 = 5_000_000;
 const KEY_CHECK_VALUE: &str = "agent-vault-key-check:v1";
 const ALGORITHM: &str = "PBKDF2-SHA256/AES-GCM";
-const KDF_NAME: &str = "PBKDF2-SHA256";
+pub(crate) const KDF_NAME: &str = "PBKDF2-SHA256";
 const MAX_SECRET_BYTES: usize = 128 * 1024;
 const LOCK_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 const LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
@@ -114,7 +114,7 @@ pub struct ListedItem {
     pub updated_at: String,
 }
 
-struct VaultWriteLock {
+pub(crate) struct VaultWriteLock {
     path: PathBuf,
     _file: File,
 }
@@ -125,7 +125,7 @@ impl Drop for VaultWriteLock {
     }
 }
 
-fn random_bytes(length: usize) -> Result<Vec<u8>> {
+pub(crate) fn random_bytes(length: usize) -> Result<Vec<u8>> {
     let rng = SystemRandom::new();
     let mut bytes = vec![0_u8; length];
     rng.fill(&mut bytes)
@@ -133,14 +133,14 @@ fn random_bytes(length: usize) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn random_hex(length: usize) -> Result<String> {
+pub(crate) fn random_hex(length: usize) -> Result<String> {
     Ok(random_bytes(length)?
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>())
 }
 
-fn now_stamp() -> String {
+pub(crate) fn now_stamp() -> String {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
@@ -252,21 +252,26 @@ fn build_item_aad(vault: &VaultFile, storage_name: &str, kind: &str) -> Vec<u8> 
     .into_bytes()
 }
 
-fn validate_vault(vault: &VaultFile) -> Result<()> {
-    if vault.schema_version != SCHEMA_VERSION || vault.algorithm != ALGORITHM {
-        return Err(AgvtError::new("unsupported Agent Vault file schema."));
-    }
-    if vault.kdf.name != KDF_NAME
-        || vault.kdf.iterations < MIN_KDF_ITERATIONS
-        || vault.kdf.iterations > MAX_KDF_ITERATIONS
+pub(crate) fn validate_kdf(kdf: &Kdf) -> Result<()> {
+    if kdf.name != KDF_NAME
+        || kdf.iterations < MIN_KDF_ITERATIONS
+        || kdf.iterations > MAX_KDF_ITERATIONS
         || BASE64
-            .decode(&vault.kdf.salt)
+            .decode(&kdf.salt)
             .map(|bytes| bytes.len())
             .unwrap_or(0)
             != 16
     {
-        return Err(AgvtError::new("unsupported Agent Vault KDF settings."));
+        return Err(AgvtError::new("unsupported KDF settings."));
     }
+    Ok(())
+}
+
+fn validate_vault(vault: &VaultFile) -> Result<()> {
+    if vault.schema_version != SCHEMA_VERSION || vault.algorithm != ALGORITHM {
+        return Err(AgvtError::new("unsupported Agent Vault file schema."));
+    }
+    validate_kdf(&vault.kdf)?;
     validate_encrypted_value(&vault.key_check)?;
     for item in vault.items.values() {
         validate_encrypted_value(&item.encrypted_value)?;
@@ -274,7 +279,7 @@ fn validate_vault(vault: &VaultFile) -> Result<()> {
     Ok(())
 }
 
-fn validate_encrypted_value(value: &EncryptedValue) -> Result<()> {
+pub(crate) fn validate_encrypted_value(value: &EncryptedValue) -> Result<()> {
     let iv_length = BASE64
         .decode(&value.iv)
         .map(|bytes| bytes.len())
@@ -295,11 +300,11 @@ fn validate_encrypted_value(value: &EncryptedValue) -> Result<()> {
     Ok(())
 }
 
-fn derive_key(passphrase: &str, vault: &VaultFile) -> Result<[u8; 32]> {
-    let iterations = NonZeroU32::new(vault.kdf.iterations)
-        .ok_or_else(|| AgvtError::new("invalid KDF iterations."))?;
+pub(crate) fn derive_key(passphrase: &str, kdf: &Kdf) -> Result<[u8; 32]> {
+    let iterations =
+        NonZeroU32::new(kdf.iterations).ok_or_else(|| AgvtError::new("invalid KDF iterations."))?;
     let salt = BASE64
-        .decode(&vault.kdf.salt)
+        .decode(&kdf.salt)
         .map_err(|_| AgvtError::new("invalid KDF salt."))?;
     let mut key = [0_u8; 32];
     pbkdf2::derive(
@@ -312,13 +317,17 @@ fn derive_key(passphrase: &str, vault: &VaultFile) -> Result<[u8; 32]> {
     Ok(key)
 }
 
-fn import_aead_key(key_bytes: &[u8; 32]) -> Result<LessSafeKey> {
+pub(crate) fn import_aead_key(key_bytes: &[u8; 32]) -> Result<LessSafeKey> {
     let unbound = UnboundKey::new(&AES_256_GCM, key_bytes)
         .map_err(|_| AgvtError::new("AES-GCM key import failed."))?;
     Ok(LessSafeKey::new(unbound))
 }
 
-fn encrypt_text(plaintext: &str, key: &LessSafeKey, aad: &[u8]) -> Result<EncryptedValue> {
+pub(crate) fn encrypt_text(
+    plaintext: &str,
+    key: &LessSafeKey,
+    aad: &[u8],
+) -> Result<EncryptedValue> {
     let iv = random_bytes(12)?;
     let nonce = Nonce::try_assume_unique_for_key(&iv)
         .map_err(|_| AgvtError::new("invalid AES-GCM nonce."))?;
@@ -333,7 +342,11 @@ fn encrypt_text(plaintext: &str, key: &LessSafeKey, aad: &[u8]) -> Result<Encryp
     })
 }
 
-fn decrypt_text(value: &EncryptedValue, key: &LessSafeKey, aad: &[u8]) -> Result<String> {
+pub(crate) fn decrypt_text(
+    value: &EncryptedValue,
+    key: &LessSafeKey,
+    aad: &[u8],
+) -> Result<String> {
     let iv = BASE64
         .decode(&value.iv)
         .map_err(|_| AgvtError::new("invalid AES-GCM IV."))?;
@@ -371,7 +384,7 @@ fn create_vault(passphrase: &str) -> Result<VaultFile> {
         created_at: created_at.clone(),
         updated_at: created_at,
     };
-    let key_bytes = derive_key(passphrase, &vault)?;
+    let key_bytes = derive_key(passphrase, &vault.kdf)?;
     let key = import_aead_key(&key_bytes)?;
     let key_check_plaintext = format!("{KEY_CHECK_VALUE}:{}", vault.vault_id);
     vault.key_check = encrypt_text(&key_check_plaintext, &key, &build_key_check_aad(&vault))?;
@@ -472,7 +485,7 @@ fn vault_lock_path(path: &Path) -> PathBuf {
     path.with_file_name(lock_name)
 }
 
-fn acquire_vault_write_lock(path: &Path) -> Result<VaultWriteLock> {
+pub(crate) fn acquire_vault_write_lock(path: &Path) -> Result<VaultWriteLock> {
     let lock_path = vault_lock_path(path);
     ensure_parent_dir(&lock_path)?;
 
@@ -530,7 +543,7 @@ pub(crate) fn set_private_permissions(_path: &Path) -> Result<()> {
 }
 
 fn unlock_vault(vault: &VaultFile, passphrase: &str) -> Result<LessSafeKey> {
-    let key_bytes = derive_key(passphrase, vault)?;
+    let key_bytes = derive_key(passphrase, &vault.kdf)?;
     let key = import_aead_key(&key_bytes)?;
     let key_check = decrypt_text(&vault.key_check, &key, &build_key_check_aad(vault))?;
     if key_check != format!("{KEY_CHECK_VALUE}:{}", vault.vault_id) {
