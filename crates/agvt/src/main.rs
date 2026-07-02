@@ -35,12 +35,6 @@ use vault::{
     AGVT_PASSPHRASE_ENV, LEGACY_PASSPHRASE_ENV,
 };
 
-/// Serializes tests across modules that mutate process environment variables
-/// (audit/dossier/charter path overrides). Every env-mutating test must hold
-/// this single crate-wide lock; per-module locks would still race each other.
-#[cfg(test)]
-pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 #[derive(Debug)]
 pub(crate) struct GlobalOptions {
     pub(crate) vault_path: PathBuf,

@@ -261,8 +261,8 @@ mod tests {
     use std::env;
 
     use super::*;
+    use crate::audit::TEST_ENV_LOCK as ENV_LOCK;
     use crate::dossier::{add_entry, AddEntryInput, Tier};
-    use crate::TEST_ENV_LOCK as ENV_LOCK;
 
     const PASSPHRASE: &str = "wire-test-passphrase-with-enough-length";
     const OPEN_TOPIC: &str = "open-device-models";

@@ -883,7 +883,6 @@ fn print_summaries(summaries: &[EntrySummary], as_json: bool, empty_message: &st
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::TEST_ENV_LOCK as ENV_LOCK;
 
     const PASSPHRASE: &str = "test-passphrase-with-enough-length";
 
