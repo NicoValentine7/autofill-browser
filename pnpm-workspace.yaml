@@ -1,3 +1,9 @@
 packages:
   - "apps/*"
   - "packages/*"
+
+# --- サプライチェーン防御 (iam QUEUE #1, npm-supply-chain-security-best-practices 準拠) ---
+# 公開から3日未満のバージョンを掴まない（axios型の即時侵害対策）
+minimumReleaseAge: 4320
+# 信頼レベル(Trusted Publisher/provenance)の降格を防ぐ
+trustPolicy: no-downgrade
