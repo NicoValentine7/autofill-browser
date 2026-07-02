@@ -1,0 +1,32 @@
+name: agvt CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/agvt/**"
+      - ".github/workflows/agvt-ci.yml"
+  pull_request:
+    paths:
+      - "crates/agvt/**"
+      - ".github/workflows/agvt-ci.yml"
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/agvt
+    env:
+      # CI に macOS Keychain はないため無効化。テストは AGVT_PASSPHRASE / vault-path 経由で動く
+      AGVT_KEYCHAIN: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/agvt
+      - name: Build
+        run: cargo build --release
+      - name: Test
+        run: cargo test
