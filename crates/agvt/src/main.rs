@@ -10,6 +10,7 @@ mod presets;
 mod reference;
 mod totp;
 mod vault;
+mod wire;
 
 use std::collections::BTreeMap;
 use std::env;
@@ -32,6 +33,12 @@ use vault::{
     validate_item_kind, validate_passphrase_value, UpsertSecretInput, UpsertTokenInput,
     AGVT_PASSPHRASE_ENV, LEGACY_PASSPHRASE_ENV,
 };
+
+/// Serializes tests across modules that mutate process environment variables
+/// (audit/dossier/charter path overrides). Every env-mutating test must hold
+/// this single crate-wide lock; per-module locks would still race each other.
+#[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Debug)]
 pub(crate) struct GlobalOptions {
@@ -98,6 +105,7 @@ fn run() -> Result<()> {
         "ls" | "list" => handle_list(&options),
         "audit" => handle_audit(&options),
         "charter" => charter::handle_charter(&options.args),
+        "wire" => wire::handle_wire(&options),
         "delete" | "rm" => handle_delete(&options),
         "presets" => handle_presets(&options.args),
         "version" | "--version" | "-V" => {
