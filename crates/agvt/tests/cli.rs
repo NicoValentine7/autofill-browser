@@ -1000,3 +1000,146 @@ fn concurrent_writes_keep_all_items() {
     assert!(list_stdout.contains("\"item\": \"github\""));
     assert!(!vault_path.with_file_name("agent-vault.json.lock").exists());
 }
+
+fn dossier_command(directory: &Path) -> Command {
+    let mut command = agvt_command(&directory.join("agent-vault.json"));
+    command.env("AGVT_DOSSIER_PATH", directory.join("dossier.json"));
+    command
+}
+
+#[test]
+fn dossier_add_search_show_round_trip() {
+    let directory = tempfile::tempdir().unwrap();
+
+    let add_output = dossier_command(directory.path())
+        .args([
+            "dossier",
+            "add",
+            "company-challenges",
+            "--body",
+            "shipping agent-first products",
+            "--tags",
+            "company,strategy",
+            "--tier",
+            "open",
+            "--id",
+            "company-challenges",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        add_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&add_output.stdout)
+        .contains("saved dossier entry company-challenges (tier=open)"));
+
+    let search_output = dossier_command(directory.path())
+        .args(["dossier", "search", "agent-first", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        search_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&search_output.stderr)
+    );
+    let search_stdout = String::from_utf8_lossy(&search_output.stdout);
+    assert!(search_stdout.contains("\"id\": \"company-challenges\""));
+    assert!(search_stdout.contains("\"tier\": \"open\""));
+    // Search output holds metadata only, never bodies.
+    assert!(!search_stdout.contains("shipping agent-first products"));
+
+    let show_output = dossier_command(directory.path())
+        .args(["dossier", "show", "company-challenges"])
+        .output()
+        .unwrap();
+    assert!(
+        show_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&show_output.stderr)
+    );
+    let show_stdout = String::from_utf8_lossy(&show_output.stdout);
+    assert!(show_stdout.contains("shipping agent-first products"));
+    assert!(show_stdout.contains("tier: open"));
+}
+
+#[test]
+fn dossier_locked_entries_stay_encrypted_everywhere_and_are_audited() {
+    let directory = tempfile::tempdir().unwrap();
+    let dossier_path = directory.path().join("dossier.json");
+    let audit_path = directory
+        .path()
+        .join("agent-vault.json")
+        .with_file_name("audit.jsonl");
+    let secret_body = "account-number-9876543210-locked";
+
+    let add_output = dossier_command(directory.path())
+        .args([
+            "dossier",
+            "add",
+            "brokerage account",
+            "--body",
+            secret_body,
+            "--tier",
+            "locked",
+            "--id",
+            "brokerage",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        add_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&add_output.stdout).contains(secret_body));
+
+    // On disk: encrypted only.
+    let raw_dossier = fs::read_to_string(&dossier_path).unwrap();
+    assert!(!raw_dossier.contains(secret_body));
+
+    // show returns the reference, never the raw body.
+    let show_output = dossier_command(directory.path())
+        .args(["dossier", "show", "brokerage", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        show_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&show_output.stderr)
+    );
+    let show_stdout = String::from_utf8_lossy(&show_output.stdout);
+    assert!(show_stdout.contains("\"bodyRef\": \"agvt://dossier/brokerage/body\""));
+    assert!(show_stdout.contains("\"body\": null"));
+    assert!(!show_stdout.contains(secret_body));
+
+    // ls prints metadata only.
+    let ls_output = dossier_command(directory.path())
+        .args(["dossier", "ls"])
+        .output()
+        .unwrap();
+    assert!(ls_output.status.success());
+    assert!(!String::from_utf8_lossy(&ls_output.stdout).contains(secret_body));
+
+    // --tier open filter never returns the locked entry.
+    let filtered_output = dossier_command(directory.path())
+        .args(["dossier", "search", "brokerage", "--tier", "open", "--json"])
+        .output()
+        .unwrap();
+    assert!(filtered_output.status.success());
+    assert!(!String::from_utf8_lossy(&filtered_output.stdout).contains("brokerage"));
+    let filtered_show = dossier_command(directory.path())
+        .args(["dossier", "show", "brokerage", "--tier", "open"])
+        .output()
+        .unwrap();
+    assert!(!filtered_show.status.success());
+    assert!(!String::from_utf8_lossy(&filtered_show.stderr).contains(secret_body));
+
+    // Audit log holds the write and the locked read attempt, never the body.
+    let raw_audit = fs::read_to_string(&audit_path).unwrap();
+    assert!(raw_audit.contains("\"op\":\"dossier-add\""));
+    assert!(raw_audit.contains("\"op\":\"dossier-read-locked\""));
+    assert!(raw_audit.contains("agvt://dossier/brokerage/body"));
+    assert!(!raw_audit.contains(secret_body));
+}

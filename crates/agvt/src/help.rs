@@ -77,6 +77,31 @@ Commands:
   agvt keychain set|status|delete
       Manage the macOS Keychain passphrase for this vault path.
 
+  agvt dossier add <topic> (--body TEXT | --body-stdin) [options]
+      Save a context entry (Agent Home Dossier layer).
+      Options: --tags a,b --tier open|standard|locked --id ID.
+      Default tier is standard; pass --tier open to opt in to freely
+      shareable context. locked bodies are encrypted with the vault
+      passphrase mechanism and are never displayed.
+
+  agvt dossier ls [--tier TIER] [--json]
+      List dossier entry metadata only (no bodies).
+
+  agvt dossier show <id> [--tier TIER] [--json]
+      Show one entry. For locked entries the body is replaced by an
+      agvt://dossier/<id>/body reference; the raw body is never printed.
+
+  agvt dossier edit <id> [--topic TEXT] [--body TEXT | --body-stdin] [--tags a,b] [--tier TIER]
+      Update an entry. Moving a locked entry to open/standard requires a
+      new body; locked bodies are never decrypted for display or downgrade.
+
+  agvt dossier rm <id>
+      Delete a dossier entry.
+
+  agvt dossier search <query> [--tier TIER] [--json]
+      Search topics, tags, and open/standard bodies. locked bodies are
+      never searched. All dossier writes and locked reads are audit-logged.
+
   agvt ls [--json]
       List non-secret metadata only.
 
@@ -102,6 +127,7 @@ Environment:
   AGVT_PATH            Repo-local vault path. Default: .local/agent-vault.json
   AGVT_GLOBAL_PATH     Global vault path. Default: ~/.local/share/agvt/agent-vault.json
   AGVT_AUDIT_PATH      Audit log path. Default: ~/.local/share/agvt/audit.jsonl
+  AGVT_DOSSIER_PATH    Dossier path. Default: ~/.local/share/agvt/dossier.json
   AGVT_KEYCHAIN=0      Disable Keychain lookup.
   AGVT_LANG=ja|en      Choose help language.
 
@@ -185,6 +211,31 @@ const HELP_JA: &str = r#"agvt - Agent Vault CLI
   agvt keychain set|status|delete
       このvault path用のmacOS Keychain passphraseを管理する
 
+  agvt dossier add <topic> (--body TEXT | --body-stdin) [options]
+      contextエントリを保存する（Agent HomeのDossier層）
+      option: --tags a,b --tier open|standard|locked --id ID
+      tierのdefaultはstandard。自由に共有してよいcontextだけ
+      --tier open で明示的にopt-inする。lockedのbodyはvaultと同じ
+      passphrase機構で暗号化され、決して表示されない
+
+  agvt dossier ls [--tier TIER] [--json]
+      dossierエントリのmetadataだけ一覧する（bodyは出さない）
+
+  agvt dossier show <id> [--tier TIER] [--json]
+      エントリを1件表示する。lockedはbodyの代わりに
+      agvt://dossier/<id>/body 参照を返し、生のbodyは決して出力しない
+
+  agvt dossier edit <id> [--topic TEXT] [--body TEXT | --body-stdin] [--tags a,b] [--tier TIER]
+      エントリを更新する。lockedをopen/standardへ変更するには新しい
+      bodyが必要（lockedのbodyは表示・降格のために復号されない）
+
+  agvt dossier rm <id>
+      dossierエントリを削除する
+
+  agvt dossier search <query> [--tier TIER] [--json]
+      topic・tags・open/standardのbodyを検索する。lockedのbodyは
+      検索されない。dossierの全writeとlocked readはauditに記録される
+
   agvt ls [--json]
       secret値を出さずにmetadataだけ一覧する
 
@@ -210,6 +261,7 @@ secret reference:
   AGVT_PATH            repo-local Vault path。default: .local/agent-vault.json
   AGVT_GLOBAL_PATH     global Vault path。default: ~/.local/share/agvt/agent-vault.json
   AGVT_AUDIT_PATH      audit log path。default: ~/.local/share/agvt/audit.jsonl
+  AGVT_DOSSIER_PATH    dossier path。default: ~/.local/share/agvt/dossier.json
   AGVT_KEYCHAIN=0      Keychain lookupを無効化
   AGVT_LANG=ja|en      help languageを選ぶ
 

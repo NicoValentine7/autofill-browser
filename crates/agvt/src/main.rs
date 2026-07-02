@@ -1,5 +1,6 @@
 mod audit;
 mod cloudflare;
+mod dossier;
 mod error;
 mod help;
 mod keychain;
@@ -85,6 +86,7 @@ fn run() -> Result<()> {
         }
         "add" | "put" => handle_add(&options),
         "read" | "get" => handle_read(&options),
+        "dossier" => dossier::handle_dossier(&options),
         "run" => handle_run(&options),
         "inject" => handle_inject(&options),
         "import-env" => handle_import_env(&options),
@@ -442,7 +444,7 @@ fn insert_optional_field(
     Ok(())
 }
 
-fn read_stdin() -> Result<String> {
+pub(crate) fn read_stdin() -> Result<String> {
     let mut value = String::new();
     io::stdin().read_to_string(&mut value)?;
     Ok(value)
