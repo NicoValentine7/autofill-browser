@@ -1,6 +1,6 @@
 # Dossier entries carry one of three sensitivity tiers
 
-Status: Proposed
+Status: Accepted
 
 ## Context
 

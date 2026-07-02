@@ -1,6 +1,6 @@
 # Agent Home is three layers: Vault, Dossier, and Charter
 
-Status: Proposed
+Status: Accepted
 
 ## Context
 
