@@ -110,6 +110,22 @@ Commands:
       Entries hold op, agvt:// ref, UTC epoch time, and caller command name.
       Secret values are never recorded.
 
+  agvt charter add <capability> <scope> <autonomy> [--conditions TEXT] [--notes TEXT]
+      Save an autonomy rule. autonomy: auto|branch-auto|confirm|deny.
+      Scope matching is exact first, then trailing-wildcard prefix (repo:*),
+      then the capability default *. Every write is audit-logged.
+
+  agvt charter ls [--json]
+      List all charter rules. The charter file is plaintext by design.
+
+  agvt charter show <capability> [--json]
+      Show the rules of one capability.
+
+  agvt charter check <capability> <scope>
+      Print a machine-readable JSON verdict {capability, scope, autonomy,
+      matchedRule}. Undefined capabilities, unmatched scopes, and a missing
+      or unreadable charter file always resolve to "confirm".
+
   agvt delete <item-or-ref>
       Delete an item.
 
@@ -127,6 +143,7 @@ Environment:
   AGVT_PATH            Repo-local vault path. Default: .local/agent-vault.json
   AGVT_GLOBAL_PATH     Global vault path. Default: ~/.local/share/agvt/agent-vault.json
   AGVT_AUDIT_PATH      Audit log path. Default: ~/.local/share/agvt/audit.jsonl
+  AGVT_CHARTER_PATH    Charter path. Default: ~/.local/share/agvt/charter.json
   AGVT_DOSSIER_PATH    Dossier path. Default: ~/.local/share/agvt/dossier.json
   AGVT_KEYCHAIN=0      Disable Keychain lookup.
   AGVT_LANG=ja|en      Choose help language.
@@ -244,6 +261,22 @@ const HELP_JA: &str = r#"agvt - Agent Vault CLI
       記録は操作名・agvt://参照・UTC epoch時刻・呼び出しコマンド名のみ
       secret値は決して記録されない
 
+  agvt charter add <capability> <scope> <autonomy> [--conditions TEXT] [--notes TEXT]
+      autonomy ruleを保存する。autonomy: auto|branch-auto|confirm|deny
+      scopeは完全一致 → 末尾wildcard前方一致（repo:*）→ capability既定の *
+      の順で照合する。書き込みは必ずaudit logに記録される
+
+  agvt charter ls [--json]
+      charter ruleを一覧する。charter fileは意図的に平文で保存される
+
+  agvt charter show <capability> [--json]
+      1つのcapabilityのruleを見る
+
+  agvt charter check <capability> <scope>
+      機械可読なJSON判定 {capability, scope, autonomy, matchedRule} を出力する
+      未定義capability・未一致scope・charter file欠損/読取不能は常に
+      "confirm" になる
+
   agvt delete <item-or-ref>
       itemを削除する
 
@@ -261,6 +294,7 @@ secret reference:
   AGVT_PATH            repo-local Vault path。default: .local/agent-vault.json
   AGVT_GLOBAL_PATH     global Vault path。default: ~/.local/share/agvt/agent-vault.json
   AGVT_AUDIT_PATH      audit log path。default: ~/.local/share/agvt/audit.jsonl
+  AGVT_CHARTER_PATH    charter path。default: ~/.local/share/agvt/charter.json
   AGVT_DOSSIER_PATH    dossier path。default: ~/.local/share/agvt/dossier.json
   AGVT_KEYCHAIN=0      Keychain lookupを無効化
   AGVT_LANG=ja|en      help languageを選ぶ
