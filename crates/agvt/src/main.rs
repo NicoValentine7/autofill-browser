@@ -9,6 +9,7 @@ mod mcp;
 mod prepare;
 mod presets;
 mod reference;
+mod sync;
 mod totp;
 mod vault;
 mod wire;
@@ -108,6 +109,7 @@ fn run() -> Result<()> {
         "ls" | "list" => handle_list(&options),
         "audit" => handle_audit(&options),
         "charter" => charter::handle_charter(&options.args),
+        "sync" => sync::handle_sync(&options),
         "wire" => wire::handle_wire(&options),
         "delete" | "rm" => handle_delete(&options),
         "presets" => handle_presets(&options.args),
