@@ -134,6 +134,13 @@ fn load_charter_lenient(path: &Path) -> CharterFile {
     }
 }
 
+/// Charter rules for `agvt wire`'s digest. Reads are lenient on purpose
+/// (ADR 0013: consumers fail toward `confirm`): a missing or corrupt charter
+/// yields an empty digest instead of blocking the wiring.
+pub(crate) fn wire_rules(path: &Path) -> Vec<CharterRule> {
+    load_charter_lenient(path).rules
+}
+
 fn save_charter(path: &Path, charter: &CharterFile) -> Result<()> {
     ensure_parent_dir(path)?;
     let temporary_path = path.with_extension(format!("tmp-{}", std::process::id()));
