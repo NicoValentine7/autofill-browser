@@ -563,6 +563,45 @@ pub(crate) fn read_locked_body(path: &Path, passphrase: &str, id: &str) -> Resul
     decrypt_text(encrypted_body, &key, &entry_aad(id))
 }
 
+/// Tier-partitioned view for `agvt wire` (ADR 0014): only `open` entries may
+/// expose topic and body in generated artifacts. `standard` and `locked`
+/// entries contribute a count only — not even their topics may leave this
+/// module toward wire output.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct WireContext {
+    pub open_entries: Vec<OpenEntry>,
+    pub standard_count: usize,
+    pub locked_count: usize,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct OpenEntry {
+    pub topic: String,
+    pub body: String,
+}
+
+pub(crate) fn wire_context(path: &Path) -> Result<WireContext> {
+    let Some(file) = load_dossier(path)? else {
+        return Ok(WireContext::default());
+    };
+    let mut context = WireContext::default();
+    for entry in file.entries.values() {
+        match entry.tier {
+            Tier::Open => {
+                if let Some(body) = &entry.body {
+                    context.open_entries.push(OpenEntry {
+                        topic: entry.topic.clone(),
+                        body: body.clone(),
+                    });
+                }
+            }
+            Tier::Standard => context.standard_count += 1,
+            Tier::Locked => context.locked_count += 1,
+        }
+    }
+    Ok(context)
+}
+
 fn normalize_tags(tags: Vec<String>) -> Vec<String> {
     let mut normalized: Vec<String> = tags
         .into_iter()
@@ -844,6 +883,7 @@ fn print_summaries(summaries: &[EntrySummary], as_json: bool, empty_message: &st
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TEST_ENV_LOCK as ENV_LOCK;
 
     const PASSPHRASE: &str = "test-passphrase-with-enough-length";
 

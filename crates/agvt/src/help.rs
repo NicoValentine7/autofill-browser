@@ -135,6 +135,18 @@ Commands:
       matchedRule}. Undefined capabilities, unmatched scopes, and a missing
       or unreadable charter file always resolve to "confirm".
 
+  agvt wire [--target DIR] [--print]
+      Generate environment bootstrap material (Agent Home wiring).
+      --target DIR merges an "agvt" entry into DIR/.mcp.json without touching
+      other servers, and writes DIR/.agent-home.md containing the open-tier
+      dossier summary, MCP connection notes, and the charter digest, with
+      guidance for including it from CLAUDE.md / AGENTS.md.
+      --print writes the same fragment to stdout for copy-paste into cloud
+      environments. wire output never contains secret values or
+      standard/locked dossier content.
+      Note: `agvt inject` is a separate command that resolves secret refs
+      into values; wire only generates configuration and includes no values.
+
   agvt delete <item-or-ref>
       Delete an item.
 
@@ -293,6 +305,17 @@ const HELP_JA: &str = r#"agvt - Agent Vault CLI
       機械可読なJSON判定 {capability, scope, autonomy, matchedRule} を出力する
       未定義capability・未一致scope・charter file欠損/読取不能は常に
       "confirm" になる
+
+  agvt wire [--target DIR] [--print]
+      agent環境への配線material（Agent Home wiring）を生成する
+      --target DIR は DIR/.mcp.json に "agvt" エントリだけをマージし
+      （他のserver設定は壊さない）、open tierのdossier要約・MCP接続の
+      説明・charter要旨を含む DIR/.agent-home.md を書き出して、
+      CLAUDE.md / AGENTS.md への取り込み方法を案内する
+      --print は同じ断片をstdoutへ出す（cloud環境へのコピペ用）
+      wireの出力にsecret値やstandard/lockedのdossier内容は決して含まれない
+      注意: `agvt inject` はsecret参照を値に解決して出力する別コマンド。
+      wireは設定の生成のみで、値を一切含まない
 
   agvt delete <item-or-ref>
       itemを削除する
