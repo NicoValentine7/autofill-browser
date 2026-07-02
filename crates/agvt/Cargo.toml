@@ -2,9 +2,12 @@
 name = "agvt"
 version = "0.1.0"
 edition = "2021"
-description = "Agent Vault CLI for development secrets"
-license = "UNLICENSED"
-publish = false
+description = "Agent-first secrets manager and context vault: agvt:// references, env injection, sensitivity-tiered dossier, autonomy charter, and an MCP server for AI agents"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/NicoValentine7/autofill-browser"
+readme = "README.md"
+keywords = ["agent", "secrets", "vault", "mcp", "cli"]
+categories = ["command-line-utilities", "authentication", "development-tools"]
 
 [dependencies]
 base64 = "0.22.1"
